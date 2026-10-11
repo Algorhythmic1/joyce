@@ -4,7 +4,8 @@ import { ancestorsOf, findEntry, type Placement } from "../projects";
 import type { SectionIcon } from "../sectionIcons";
 import { BookIcon, Chevron, NewDocIcon, NewFolderIcon, NewProjectIcon } from "./icons";
 import { IconPicker, SectionIconView } from "./IconPicker";
-import { SIDEBAR_WIDTH, clampSidebarWidth } from "../settings";
+import { SIDEBAR_WIDTH } from "../settings";
+import { Resizer } from "./Resizer";
 
 export type CreateKind = "file" | "dir" | "project";
 
@@ -291,7 +292,15 @@ export function Sidebar(props: Props) {
           )}
         </ul>
       )}
-      <Resizer width={props.width} onResize={props.onResize} />
+      <Resizer
+        edge="right"
+        width={props.width}
+        min={SIDEBAR_WIDTH.min}
+        max={SIDEBAR_WIDTH.max}
+        cssVar="--sidebar-width"
+        label="Resize sidebar"
+        onResize={(w) => props.onResize(w ?? SIDEBAR_WIDTH.default)}
+      />
       {picker && (
         <IconPicker
           icon={picker.entry.icon}
@@ -407,68 +416,6 @@ function TreeLevel(props: LevelProps) {
         );
       })}
     </ul>
-  );
-}
-
-/**
- * The sidebar's right edge: drag to resize, double-click to reset, or focus it
- * and use the arrow keys. The width is saved when you let go.
- */
-function Resizer({ width, onResize }: { width: number; onResize: (w: number) => void }) {
-  const drag = useRef<{ startX: number; startWidth: number; last: number } | null>(null);
-
-  // Resize live by setting the CSS variable directly; save once at the end.
-  const preview = (w: number) => document.querySelector<HTMLElement>(".app")?.style.setProperty("--sidebar-width", `${w}px`);
-
-  return (
-    <div
-      className="sidebar-resizer"
-      role="separator"
-      aria-orientation="vertical"
-      aria-label="Resize sidebar"
-      aria-valuemin={SIDEBAR_WIDTH.min}
-      aria-valuemax={SIDEBAR_WIDTH.max}
-      aria-valuenow={width}
-      tabIndex={0}
-      title="Drag to resize · double-click to reset"
-      onPointerDown={(e) => {
-        if (e.button !== 0) return;
-        e.preventDefault();
-        try {
-          // Keeps the drag going even when the pointer outruns the handle.
-          e.currentTarget.setPointerCapture(e.pointerId);
-        } catch {
-          // Not essential; the drag still works while over the handle.
-        }
-        drag.current = { startX: e.clientX, startWidth: width, last: width };
-        document.body.classList.add("resizing");
-      }}
-      onPointerMove={(e) => {
-        const d = drag.current;
-        if (!d) return;
-        d.last = clampSidebarWidth(d.startWidth + e.clientX - d.startX);
-        preview(d.last);
-      }}
-      onPointerUp={() => {
-        const d = drag.current;
-        drag.current = null;
-        document.body.classList.remove("resizing");
-        if (d && d.last !== width) onResize(d.last);
-      }}
-      onPointerCancel={() => {
-        drag.current = null;
-        document.body.classList.remove("resizing");
-        preview(width);
-      }}
-      onDoubleClick={() => onResize(SIDEBAR_WIDTH.default)}
-      onKeyDown={(e) => {
-        const step = e.shiftKey ? 48 : 16;
-        if (e.key === "ArrowLeft") onResize(clampSidebarWidth(width - step));
-        else if (e.key === "ArrowRight") onResize(clampSidebarWidth(width + step));
-        else return;
-        e.preventDefault();
-      }}
-    />
   );
 }
 

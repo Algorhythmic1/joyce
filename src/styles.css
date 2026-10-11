@@ -165,6 +165,8 @@ button {
 
 .main {
   position: relative;
+  container-type: inline-size;
+  container-name: joyce-main;
   flex: 1;
   min-width: 0;
   display: flex;
@@ -179,6 +181,15 @@ button {
   user-select: text;
   cursor: text;
 }
+
+.workspace-panes { flex: 1; min-height: 0; display: flex; }
+.writing-surface { position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.writing-surface[hidden] { display: none; }
+/* Resizable from its left edge; until then, a responsive natural width. The
+   writing column keeps 320px when there is room; narrow windows share the space. */
+.canvas-pane { position: relative; flex-shrink: 0; width: var(--canvas-width, clamp(280px, 40%, 440px)); max-width: max(55%, calc(100% - 320px)); min-width: 0; margin-top: var(--toolbar-height); border-left: 1px solid var(--border); }
+.canvas-pane.maximized { flex: 1; width: auto; max-width: none; border-left: 0; }
+.canvas-pane > .empty { height: 100%; }
 
 .empty {
   flex: 1;
@@ -217,6 +228,14 @@ button {
 .tool-group {
   display: flex;
   gap: 1px;
+}
+
+@container joyce-main (max-width: 600px) {
+  .format-tools { gap: 6px; }
+  .format-tools .tool-group:nth-child(n + 3) { display: none; }
+}
+@container joyce-main (max-width: 420px) {
+  .format-tools .tool-group { display: none; }
 }
 
 .icon-button {
@@ -1292,9 +1311,9 @@ button.section-icon:hover {
   margin-left: auto;
 }
 
-/* --- Resizable sidebar ------------------------------------------------------ */
+/* --- Resizable sidebars ------------------------------------------------------ */
 
-.sidebar-resizer {
+.pane-resizer {
   position: absolute;
   top: 0;
   bottom: 0;
@@ -1302,11 +1321,12 @@ button.section-icon:hover {
   width: 8px;
   z-index: 5;
   cursor: col-resize;
+  touch-action: none;
   outline: none;
 }
 
 /* A thin accent line on hover, drag or keyboard focus shows it can be moved. */
-.sidebar-resizer::after {
+.pane-resizer::after {
   content: "";
   position: absolute;
   top: 0;
@@ -1318,10 +1338,15 @@ button.section-icon:hover {
   transition: opacity 0.15s 0.1s;
 }
 
-.sidebar-resizer:hover::after,
-.sidebar-resizer:focus-visible::after,
-.resizing .sidebar-resizer::after {
+.pane-resizer:hover::after,
+.pane-resizer:focus-visible::after,
+.pane-resizer.dragging::after {
   opacity: 0.6;
+}
+
+.pane-resizer.left {
+  right: auto;
+  left: -4px;
 }
 
 /* While dragging, keep the resize cursor everywhere and don't select text. */

@@ -111,6 +111,13 @@ fn ignored(name: &str) -> bool {
 
 /// Joyce's own data files, as opposed to writing.
 fn is_app_data(path: &str) -> bool {
+    // Canvas cards contain a writer's ideas. Preserve concurrent versions just
+    // like documents, even though the board lives alongside hidden app data.
+    if let Some(name) = path.strip_prefix(".joyce/") {
+        if name == "canvas.json" || (name.starts_with("canvas (") && name.ends_with(").json") && !name.contains('/')) {
+            return false;
+        }
+    }
     path.starts_with(".joyce/") || path == ".joyce.json" || path.ends_with("/.joyce.json")
 }
 
@@ -548,6 +555,15 @@ fn write_atomic(path: &Path, content: &[u8]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canvas_ideas_keep_conflicting_versions() {
+        assert!(!is_app_data(".joyce/canvas.json"));
+        assert!(!is_app_data(".joyce/canvas (conflict from B).json"));
+        assert!(is_app_data(".joyce/goals.json"));
+        assert!(is_app_data(".joyce/canvas-settings.json"));
+        assert!(is_app_data("Novel/.joyce.json"));
+    }
 
     #[test]
     fn paths_from_the_server_must_stay_inside() {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import type { EditorView } from "@codemirror/view";
 import { Editor } from "./components/Editor";
 import { Sidebar, type CreateKind } from "./components/Sidebar";
@@ -17,17 +17,20 @@ import { countChars, forgetDocGoals, goalState, moveDocGoals, useDocGoal } from 
 import { SettingsPanel } from "./components/SettingsPanel";
 import { ProgressPanel } from "./components/ProgressPanel";
 import { startReminders } from "./reminders";
-import { bindFolder, reloadFolderState, toRel } from "./folderState";
+import { bindFolder, flushFolderState, reloadFolderState, toRel } from "./folderState";
+import { flushCanvases, reloadCanvas } from "./canvas/sessions";
 import { SyncPanel, statusText } from "./components/SyncPanel";
 import { onRemoteChanges, useSync } from "./sync";
 import { goalFor, periodTotal, recordWriting, useDays, useGoals, type Period } from "./stats";
-import { ASSETS_DIR, allPaths, basename, dirname, displayName, isWithin, join, slugify, storage, uniquePath, type Entry } from "./fs";
-import { fontStack, loadSettings, saveSettings, type Settings } from "./settings";
+import { ASSETS_DIR, allPaths, basename, dirname, displayName, isTauri, isWithin, join, slugify, storage, uniquePath, type Entry } from "./fs";
+import { CANVAS_WIDTH, fontStack, loadSettings, saveSettings, type Settings } from "./settings";
+import { Resizer } from "./components/Resizer";
 
 const ROOT_KEY = "joyce:root";
 const LAST_KEY = "joyce:last-file";
 const SAVE_DELAY = 400;
 const TEXT_EXT = /\.(md|markdown|txt)$/i;
+const CanvasWorkspace = lazy(() => import("./components/CanvasWorkspace"));
 
 // Image Markdown and link URLs aren't words anyone wrote.
 const countWords = (text: string) =>
@@ -73,8 +76,19 @@ export default function App() {
   const [panel, setPanel] = useState<Panel | null>(null);
   const [typing, setTyping] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [canvasOpen, setCanvasOpen] = useState(false);
+  const [canvasMaximized, setCanvasMaximized] = useState(false);
+  const canvasMaximizedRef = useRef(false);
+  const previousCanvas = useRef({ open: false, maximized: false });
+  canvasMaximizedRef.current = canvasMaximized;
 
   const report = useCallback((e: unknown) => setToast(String(e)), []);
+  const closeCanvas = useCallback(() => {
+    void flushCanvases().catch(report);
+    setCanvasOpen(false);
+    setCanvasMaximized(false);
+    setTyping(false);
+  }, [report]);
 
   // --- Saving ---------------------------------------------------------------
   const pending = useRef<{ path: string; text: string } | null>(null);
@@ -114,6 +128,23 @@ export default function App() {
     };
   }, [flush]);
 
+  useEffect(() => {
+    if (!isTauri) return;
+    let disposed = false;
+    let off: (() => void) | undefined;
+    void import("@tauri-apps/api/window").then(async ({ getCurrentWindow }) => {
+      if (disposed) return;
+      const window = getCurrentWindow();
+      const unlisten = await window.onCloseRequested(async e => {
+        e.preventDefault();
+        try { await flush(); await flushFolderState(); await flushCanvases(); await window.destroy(); }
+        catch (error) { report(`Joyce is still open because saving failed: ${String(error)}`); }
+      });
+      if (disposed) unlisten(); else off = unlisten;
+    }).catch(report);
+    return () => { disposed = true; off?.(); };
+  }, [flush, report]);
+
   // --- Files ----------------------------------------------------------------
   const refresh = useCallback(async () => {
     if (!root) return;
@@ -126,6 +157,7 @@ export default function App() {
 
   const openFile = useCallback(
     async (path: string) => {
+      setCanvasMaximized(false);
       await flush();
       try {
         const text = await storage.read(path);
@@ -159,6 +191,9 @@ export default function App() {
     const picked = await storage.pickFolder().catch(report);
     if (!picked) return;
     await flush();
+    try { await flushCanvases(); } catch (e) { report(e); return; }
+    setCanvasOpen(false);
+    setCanvasMaximized(false);
     setDoc(null);
     localStorage.setItem(ROOT_KEY, picked);
     setRoot(picked);
@@ -400,13 +435,14 @@ export default function App() {
   // --- Sync -------------------------------------------------------------------
   const sync = useSync();
   // Latest values for the long-lived listener below.
-  const latest = useRef({ doc, view, tree, refresh, flush });
-  latest.current = { doc, view, tree, refresh, flush };
+  const latest = useRef({ doc, view, tree, refresh, flush, root });
+  latest.current = { doc, view, tree, refresh, flush, root };
 
   useEffect(
     () =>
       onRemoteChanges(async (paths) => {
-        const { doc, view, tree, refresh, flush } = latest.current;
+        const { doc, view, tree, refresh, flush, root } = latest.current;
+        if (root) reloadCanvas(root, paths);
         await refresh();
         if (paths.some((p) => p.startsWith(".joyce/"))) await reloadFolderState();
         const rel = doc && toRel(doc.path);
@@ -465,8 +501,10 @@ export default function App() {
       if (e.key === "Escape") setPanel(null);
       if (!e.metaKey && !e.ctrlKey) return;
       const key = e.key.toLowerCase();
-      if (key === "\\") toggleSidebarRef.current();
+      if (key === "m" && e.shiftKey && root) { setCanvasOpen(open => !open); setCanvasMaximized(false); setPanel(null); setTyping(false); }
+      else if (key === "\\") toggleSidebarRef.current();
       else if (key === "n" && root) {
+        if (canvasMaximizedRef.current) return;
         const dir = doc ? dirname(doc.path) : (project?.path ?? root);
         createRef.current(e.shiftKey ? "dir" : "file", dir);
       } else return;
@@ -475,6 +513,15 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [root, doc, project]);
+
+  useEffect(() => {
+    const previous = previousCanvas.current;
+    if (previous.open !== canvasOpen || previous.maximized !== canvasMaximized) {
+      view?.requestMeasure();
+      if ((previous.open && !canvasOpen) || (previous.maximized && !canvasMaximized)) view?.focus();
+    }
+    previousCanvas.current = { open: canvasOpen, maximized: canvasMaximized };
+  }, [canvasOpen, canvasMaximized, view]);
 
   // Fade the chrome out while typing; any mouse movement brings it back.
   useEffect(() => {
@@ -538,6 +585,7 @@ export default function App() {
     "--line-height": settings.lineHeight,
     "--measure": `calc(${settings.measure}ch + 4rem)`,
     "--sidebar-width": `${settings.sidebarWidth}px`,
+    ...(settings.canvasWidth ? { "--canvas-width": `${settings.canvasWidth}px` } : {}),
   } as React.CSSProperties;
 
   if (!root) {
@@ -551,7 +599,7 @@ export default function App() {
   }
 
   return (
-    <div className={`app${settings.sidebar ? "" : " no-sidebar"}${typing && doc ? " typing" : ""}`} style={cssVars}>
+    <div className={`app${settings.sidebar ? "" : " no-sidebar"}${typing && doc && !canvasOpen ? " typing" : ""}`} style={cssVars}>
       {settings.sidebar && (
         <Sidebar
           root={root}
@@ -560,7 +608,7 @@ export default function App() {
           openProject={project?.path ?? null}
           renaming={renaming}
           onOpen={openFile}
-          onOpenProject={openProject}
+          onOpenProject={path => { setCanvasMaximized(false); void openProject(path); }}
           onSetProject={setProjectFlag}
           onSetIcon={setIcon}
           width={settings.sidebarWidth}
@@ -580,14 +628,17 @@ export default function App() {
         }
       >
         <Toolbar
-          view={view}
+          view={canvasMaximized ? null : view}
+          canvasOpen={canvasOpen}
+          canvasMaximized={canvasMaximized}
+          onToggleCanvas={() => { if (canvasOpen) closeCanvas(); else { setCanvasOpen(true); setCanvasMaximized(false); setPanel(null); setTyping(false); } }}
           onToggleSidebar={toggleSidebar}
           panel={panel}
           onTogglePanel={(p) => setPanel((open) => (open === p ? null : p))}
           todayProgress={goals.daily ? today / goals.daily : null}
           syncState={sync.info?.enabled ? (sync.info.status?.state ?? "syncing") : null}
           syncTitle={sync.info?.enabled ? `Sync: ${statusText(sync.info.status)}` : "Sync"}
-          hasDoc={!!doc}
+          hasDoc={!!doc && !canvasMaximized}
         />
         {panel === "type" && <SettingsPanel settings={settings} onChange={updateSettings} />}
         {panel === "progress" && <ProgressPanel />}
@@ -596,6 +647,8 @@ export default function App() {
         {panel === "publish" && doc && (
           <PublishPanel localPath={doc.path} getText={() => view?.state.doc.toString() ?? doc.text} />
         )}
+        <div className="workspace-panes">
+        <div className="writing-surface" hidden={canvasMaximized} inert={canvasMaximized}>
         {doc ? (
           <Editor
             key={doc.id}
@@ -657,6 +710,25 @@ export default function App() {
             </span>
           </footer>
         )}
+        </div>
+        {canvasOpen && <aside className={`canvas-pane${canvasMaximized ? " maximized" : ""}`} aria-label="Ideas sidebar">
+          {!canvasMaximized && (
+            <Resizer
+              edge="left"
+              width={settings.canvasWidth}
+              min={CANVAS_WIDTH.min}
+              max={CANVAS_WIDTH.max}
+              cssVar="--canvas-width"
+              label="Resize ideas sidebar"
+              onResize={(canvasWidth) => updateSettings({ canvasWidth })}
+            />
+          )}
+          <Suspense fallback={<div className="empty">Opening your canvas…</div>}>
+            <CanvasWorkspace key={root} root={root} maximized={canvasMaximized}
+              onToggleMaximized={() => { setCanvasMaximized(value => !value); setPanel(null); setTyping(false); }} onClose={closeCanvas}/>
+          </Suspense>
+        </aside>}
+        </div>
         {toast && <div className="toast" onClick={() => setToast(null)}>{toast}</div>}
       </main>
     </div>

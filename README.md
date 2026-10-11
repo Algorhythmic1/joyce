@@ -41,6 +41,23 @@ For longer pieces, a **project** keeps chapters or sections as separate document
 
 **Aa** offers Auto (follows macOS light/dark), Light, Cream (the app icon's paper and ink), Sepia and Dark.
 
+## Idea canvas
+
+The connected-card button in the toolbar (⇧⌘M / Ctrl+Shift+M) opens an infinite canvas in a right-hand sidebar beside your writing. The expand button fills the workspace with the canvas; click the dock button to return it to the sidebar. It starts closed each time Joyce launches and opens in the sidebar, remembering your position when you reopen it. Your document keeps its cursor, scroll position, and undo history while you think on the canvas, and the sidebar stays open as you switch documents. Keyboard shortcuts apply to the writing panel or canvas you’re using.
+
+- Double-click empty space or choose **Add card** to jot down an idea. Double-click a card or press Enter to edit it; Escape finishes editing.
+- Drag the divider along the canvas’s left edge to resize the sidebar; its width is remembered. Double-click the divider to reset it, or focus it and use the arrow keys (Shift for larger steps). Maximizing and restoring keeps your sidebar width.
+- Drag cards to arrange them. Shift-click selects several; arrow keys move the selection. Drag the three diagonal dots at a card’s lower-right corner to resize it, or focus the handle and use the arrow keys.
+- Hover or focus a card for its edit menu: move, edit, icon/color, three text sizes, duplicate, connect, and delete. **Fit to content** is in the appearance menu.
+- Drag a card’s side dot onto another card to connect them, or choose **Connect** and click a destination. Keyboard users can press C, focus another card, and press Enter. Select a connection to toggle an arrow or delete it.
+- Pan by dragging the background, Space-dragging, or scrolling in either direction. Pinch or hold ⌘/Ctrl while scrolling to zoom. **Fit** (F) brings the cards into view; the percentage button resets zoom to 100%.
+- The minimap shows the cards and current viewport. Click to jump or drag the viewport to navigate. The **?** button lists shortcuts.
+- ⌘/Ctrl+Z undoes board actions; Shift+⌘/Ctrl+Z redoes them. An active text field keeps its own text undo. Canvas ideas do not count toward document writing goals.
+
+Cards and connections are saved as readable, versioned JSON in `.joyce/canvas.json`. Camera position stays on each computer. Sync preserves conflicting canvas versions; **Recovered versions** lets you preview and restore them, backing up the current board first. Save failures keep your ideas in memory and show a Retry action. Reduced-motion preferences disable the grid’s simulated indentation.
+
+Run `npm test` (Node 22.18+ or 24+) for the canvas geometry, undo, saving, validation, and recovery tests. `npm run build` checks TypeScript and builds the UI; `cd src-tauri` followed by `cargo test --lib` checks the native storage and sync behavior.
+
 ## Progress & goals
 
 The ring in the toolbar opens your writing stats: words written today, this week and this month against optional goals, your streak, time spent writing, and history by day, week or month.

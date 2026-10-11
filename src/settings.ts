@@ -10,9 +10,13 @@ export interface Settings {
   sidebar: boolean;
   /** Sidebar width in pixels. */
   sidebarWidth: number;
+  /** Ideas canvas pane width in pixels, or null for its natural width. */
+  canvasWidth: number | null;
 }
 
 export const SIDEBAR_WIDTH = { min: 180, default: 248, max: 520 };
+/** The canvas pane can grow wide, but the writing column always keeps some room (see styles.css). */
+export const CANVAS_WIDTH = { min: 260, max: 1200 };
 export const clampSidebarWidth = (w: number) =>
   Math.round(Math.min(SIDEBAR_WIDTH.max, Math.max(SIDEBAR_WIDTH.min, w)));
 
@@ -44,6 +48,7 @@ export const DEFAULT_SETTINGS: Settings = {
   theme: "auto",
   sidebar: true,
   sidebarWidth: SIDEBAR_WIDTH.default,
+  canvasWidth: null,
 };
 
 const KEY = "joyce:settings";
@@ -51,7 +56,12 @@ const KEY = "joyce:settings";
 export function loadSettings(): Settings {
   try {
     const s = { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(KEY) ?? "{}") };
-    return { ...s, sidebarWidth: clampSidebarWidth(Number(s.sidebarWidth) || SIDEBAR_WIDTH.default) };
+    const canvas = Number(s.canvasWidth);
+    return {
+      ...s,
+      sidebarWidth: clampSidebarWidth(Number(s.sidebarWidth) || SIDEBAR_WIDTH.default),
+      canvasWidth: canvas ? Math.round(Math.min(CANVAS_WIDTH.max, Math.max(CANVAS_WIDTH.min, canvas))) : null,
+    };
   } catch {
     return DEFAULT_SETTINGS;
   }

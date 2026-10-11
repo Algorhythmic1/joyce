@@ -8,6 +8,7 @@ const Svg = ({ children }: { children: React.ReactNode }) => (
 export const SidebarIcon = () => (
   <Svg><rect x="1.5" y="2.5" width="13" height="11" rx="2" /><path d="M6 2.5v11" /></Svg>
 );
+export const CanvasIcon = () => <Svg><rect x="1.5" y="2" width="5" height="4" rx="1"/><rect x="9.5" y="10" width="5" height="4" rx="1"/><path d="M6.5 4h3a2 2 0 0 1 2 2v4M3.5 9h3M5 7.5v3"/></Svg>;
 export const QuoteIcon = () => (
   <Svg><path d="M3 3.5v9" strokeWidth="2" /><path d="M7 5.5h6M7 8h6M7 10.5h4" /></Svg>
 );

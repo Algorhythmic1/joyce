@@ -2,9 +2,12 @@ import type { EditorView } from "@codemirror/view";
 import {
   insertLink, setHeading, toggleBullets, toggleInline, toggleNumbers, toggleQuote,
 } from "../editor/commands";
-import { BulletsIcon, CloudIcon, CodeIcon, LinkIcon, NumbersIcon, ProgressRing, PublishIcon, QuoteIcon, SidebarIcon } from "./icons";
+import { BulletsIcon, CanvasIcon, CloudIcon, CodeIcon, LinkIcon, NumbersIcon, ProgressRing, PublishIcon, QuoteIcon, SidebarIcon } from "./icons";
 
 interface Props {
+  canvasOpen: boolean;
+  canvasMaximized: boolean;
+  onToggleCanvas: () => void;
   view: EditorView | null;
   onToggleSidebar: () => void;
   panel: Panel | null;
@@ -44,13 +47,13 @@ const GROUPS: Tool[][] = [
 
 export type Panel = "type" | "progress" | "publish" | "docGoal" | "sync";
 
-export function Toolbar({ view, onToggleSidebar, panel, onTogglePanel, todayProgress, hasDoc, syncState, syncTitle }: Props) {
+export function Toolbar({ view, onToggleSidebar, panel, onTogglePanel, todayProgress, hasDoc, syncState, syncTitle, canvasOpen, canvasMaximized, onToggleCanvas }: Props) {
   return (
     <header className="toolbar" data-tauri-drag-region>
       <button className="icon-button sidebar-toggle" onClick={onToggleSidebar} title="Toggle sidebar (⌘\)">
         <SidebarIcon />
       </button>
-      <div className="format-tools" data-tauri-drag-region>
+      {canvasMaximized ? <div className="toolbar-canvas-label" data-tauri-drag-region>Ideas / Canvas</div> : <div className="format-tools" data-tauri-drag-region>
         {GROUPS.map((group, i) => (
           <div className="tool-group" key={i}>
             {group.map((tool) => (
@@ -68,8 +71,10 @@ export function Toolbar({ view, onToggleSidebar, panel, onTogglePanel, todayProg
             ))}
           </div>
         ))}
-      </div>
+      </div>}
       <div className="panel-buttons">
+        <button className={`icon-button${canvasOpen ? " active" : ""}`} aria-label="Toggle idea canvas" aria-pressed={canvasOpen} title="Idea canvas (⇧⌘M)"
+          onMouseDown={e => e.stopPropagation()} onClick={onToggleCanvas}><CanvasIcon/></button>
         <button
           className={`icon-button sync-button${panel === "sync" ? " active" : ""}${syncState ? ` sync-${syncState}` : ""}`}
           onMouseDown={(e) => e.stopPropagation()}
