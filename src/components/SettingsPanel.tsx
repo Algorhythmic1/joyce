@@ -8,6 +8,7 @@ interface Props {
 const THEMES: { id: Theme; label: string }[] = [
   { id: "auto", label: "Auto" },
   { id: "light", label: "Light" },
+  { id: "cream", label: "Cream" },
   { id: "sepia", label: "Sepia" },
   { id: "dark", label: "Dark" },
 ];

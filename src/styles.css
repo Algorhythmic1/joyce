@@ -18,10 +18,39 @@
   --panel-bg: #ffffff;
   --shadow: 0 12px 40px rgba(30, 20, 0, 0.14), 0 0 0 1px rgba(30, 20, 0, 0.06);
   color-scheme: light;
+  /* Section icon colors: a validated categorical palette, light steps. */
+  --icon-blue: #2a78d6;
+  --icon-orange: #eb6834;
+  --icon-aqua: #1baf7a;
+  --icon-yellow: #eda100;
+  --icon-magenta: #e87ba4;
+  --icon-green: #008300;
+  --icon-violet: #6250d6;
+  --icon-red: #e34948;
+  --icon-gray: #8a867e;
+  /* Light icon colors are faint on pale paper; a hairline edge keeps them crisp. */
+  --icon-edge: rgba(40, 30, 10, 0.28);
 }
 
 :root.tauri {
   --traffic-lights: 78px;
+}
+
+/* Cream: the app icon's paper and ink, with the purple accent. */
+:root[data-theme="cream"] {
+  --bg: #f9f4e9;
+  --sidebar-bg: #f0e8d7;
+  --text: #26232d;
+  --muted: #aba291;
+  --quote: #6b6457;
+  --ui-text: #5a5246;
+  --hover: rgba(70, 50, 10, 0.06);
+  --selected: rgba(147, 51, 234, 0.12);
+  --border: rgba(70, 50, 10, 0.1);
+  --accent: #9333ea;
+  --selection: rgba(147, 51, 234, 0.17);
+  --panel-bg: #fdfaf3;
+  --shadow: 0 12px 40px rgba(60, 40, 0, 0.14), 0 0 0 1px rgba(60, 40, 0, 0.07);
 }
 
 :root[data-theme="sepia"] {
@@ -40,6 +69,16 @@
 }
 
 :root[data-theme="dark"] {
+  --icon-blue: #3987e5;
+  --icon-orange: #d95926;
+  --icon-aqua: #199e70;
+  --icon-yellow: #c98500;
+  --icon-magenta: #d55181;
+  --icon-green: #008300;
+  --icon-violet: #9085e9;
+  --icon-red: #e66767;
+  --icon-gray: #8d8a85;
+  --icon-edge: transparent;
   --bg: #1d1d1f;
   --sidebar-bg: #242426;
   --text: #e4e2dd;
@@ -58,6 +97,17 @@
 
 @media (prefers-color-scheme: dark) {
   :root[data-theme="auto"] {
+    --icon-blue: #3987e5;
+    --icon-orange: #d95926;
+    --icon-aqua: #199e70;
+    --icon-yellow: #c98500;
+    --icon-magenta: #d55181;
+    --icon-green: #008300;
+    --icon-violet: #9085e9;
+    --icon-red: #e66767;
+    --icon-gray: #8d8a85;
+    --icon-edge: transparent;
+  --icon-edge: transparent;
     --bg: #1d1d1f;
     --sidebar-bg: #242426;
     --text: #e4e2dd;
@@ -220,6 +270,7 @@ button {
 /* --- Sidebar ------------------------------------------------------------ */
 
 .sidebar {
+  position: relative;
   width: var(--sidebar-width);
   flex-shrink: 0;
   display: flex;
@@ -444,7 +495,7 @@ button {
 
 .segmented {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 2px;
 }
 
@@ -983,4 +1034,300 @@ input[type="range"] {
 
 .tree-row[draggable="true"] {
   -webkit-user-drag: element;
+}
+
+/* --- Document goal ------------------------------------------------------ */
+
+.statusbar {
+  display: flex;
+  align-items: center;
+}
+
+.statusbar-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  margin: -2px 0;
+  border-radius: 5px;
+  color: inherit;
+  font-size: inherit;
+  font-variant-numeric: tabular-nums;
+  pointer-events: auto;
+}
+
+.statusbar-count:hover,
+.statusbar-count.active {
+  background: var(--hover);
+  color: var(--ui-text);
+}
+
+.statusbar-count.met .statusbar-check {
+  color: var(--accent);
+}
+
+.statusbar-count.over {
+  color: #c2410c;
+  font-weight: 600;
+}
+
+:root[data-theme="dark"] .statusbar-count.over {
+  color: #fb923c;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="auto"] .statusbar-count.over {
+    color: #fb923c;
+  }
+}
+
+/* Track is a light step of the fill's own hue. */
+.mini-meter {
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  overflow: hidden;
+}
+
+.mini-meter > span {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 0.2s ease-out;
+}
+
+.over .mini-meter {
+  background: color-mix(in srgb, currentColor 22%, transparent);
+}
+
+.over .mini-meter > span {
+  background: currentColor;
+}
+
+/* An exceeded limit stays in view while typing. */
+.typing .statusbar.alert {
+  opacity: 1;
+}
+
+.typing .statusbar.alert .statusbar-sep,
+.typing .statusbar.alert .statusbar-count ~ * {
+  opacity: 0;
+}
+
+.doc-goal-panel {
+  top: auto;
+  bottom: 38px;
+  right: 10px;
+  width: 300px;
+  gap: 12px;
+}
+
+.doc-goal-panel h3 {
+  margin: 0;
+}
+
+.doc-goal-panel .hint {
+  margin: 0;
+}
+
+.segmented.three {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.doc-goal-row {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: 8px;
+  align-items: center;
+}
+
+.doc-goal-row input {
+  font: 13px/1.4 var(--ui-font);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  outline: none;
+  width: 100%;
+}
+
+.doc-goal-row input:focus {
+  border-color: var(--accent);
+}
+
+.doc-goal-row .segmented {
+  margin: 0;
+}
+
+.typing .statusbar:not(.alert) .statusbar-count {
+  pointer-events: none;
+}
+
+/* --- Projects ----------------------------------------------------------- */
+
+.tree-icon {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  margin-right: 4px;
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.tree-row.is-project .tree-label {
+  font-weight: 600;
+}
+
+/* Insertion line for reordering sections within a project. */
+.tree-row {
+  position: relative;
+}
+
+.tree-row.drop-before::before,
+.tree-row.drop-after::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 4px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+.tree-row.drop-before::before {
+  top: -1px;
+}
+
+.tree-row.drop-after::after {
+  bottom: -1px;
+}
+
+/* --- Section icons -------------------------------------------------------- */
+
+button.section-icon {
+  padding: 0;
+  height: 18px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+button.section-icon:hover {
+  background: var(--hover);
+}
+
+/* An unset icon is a faint dot, so every row in a project lines up. */
+.icon-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--muted);
+  opacity: 0.45;
+}
+
+.icon-picker {
+  position: fixed;
+  z-index: 25;
+  width: 228px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--panel-bg);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  animation: pop 0.12s ease-out;
+}
+
+.icon-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 2px;
+}
+
+.icon-grid button {
+  display: grid;
+  place-items: center;
+  height: 30px;
+  border-radius: 6px;
+}
+
+.icon-grid button:hover {
+  background: var(--hover);
+}
+
+.icon-grid button.selected {
+  background: var(--selected);
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+
+.color-row {
+  display: grid;
+  grid-template-columns: repeat(9, 1fr);
+  gap: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.swatch {
+  aspect-ratio: 1;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+}
+
+.swatch.selected {
+  box-shadow: 0 0 0 2px var(--panel-bg), 0 0 0 3.5px var(--text);
+}
+
+.icon-picker-footer {
+  display: flex;
+  justify-content: space-between;
+}
+
+.icon-picker-footer .link-button:only-child {
+  margin-left: auto;
+}
+
+/* --- Resizable sidebar ------------------------------------------------------ */
+
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -4px;
+  width: 8px;
+  z-index: 5;
+  cursor: col-resize;
+  outline: none;
+}
+
+/* A thin accent line on hover, drag or keyboard focus shows it can be moved. */
+.sidebar-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 0.15s 0.1s;
+}
+
+.sidebar-resizer:hover::after,
+.sidebar-resizer:focus-visible::after,
+.resizing .sidebar-resizer::after {
+  opacity: 0.6;
+}
+
+/* While dragging, keep the resize cursor everywhere and don't select text. */
+body.resizing,
+body.resizing * {
+  cursor: col-resize !important;
+  -webkit-user-select: none !important;
+  user-select: none !important;
 }

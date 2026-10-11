@@ -10,7 +10,7 @@
     "tauri": "tauri",
     "app": "tauri dev",
     "app:build": "tauri build",
-    "app:install": "tauri build --bundles app && osascript -e 'quit app \"Joyce\"' && sleep 1 && ditto src-tauri/target/release/bundle/macos/Joyce.app /Applications/Joyce.app && open /Applications/Joyce.app"
+    "app:install": "tauri build --bundles app && (osascript -e 'quit app \"Joyce\"' || true) && sleep 1 && ditto src-tauri/target/release/bundle/macos/Joyce.app /Applications/Joyce.app && touch /Applications/Joyce.app && /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Applications/Joyce.app && open /Applications/Joyce.app"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.1",

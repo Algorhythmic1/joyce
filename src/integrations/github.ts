@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { parseDocument, stringify } from "yaml";
-import { basename, displayName, isTauri } from "../fs";
+import { basename, displayName, isTauri, slugify } from "../fs";
 
 /** Where posts go. Defaults match the Bickerstaff Media (Astrolabe) Astro site. */
 export interface GithubTarget {
@@ -97,14 +97,7 @@ export function splitTitle(text: string): { title: string | null; body: string }
   return { title: m[1].trim(), body: text.slice(m[0].length).replace(/^\s*\n/, "") };
 }
 
-/** Same shape as the CMS's slugs: "I'm a DPRK soldier" → "i-m-a-dprk-soldier". */
-export const slugify = (s: string) =>
-  s
-    .normalize("NFKD")
-    .replace(/[̀-ͯ]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+export { slugify };
 
 /**
  * MDX treats `<` and `{` as JSX. Prose can contain both ("x < y", "{sic}"), so
@@ -262,6 +255,16 @@ export async function savePost(
   target: GithubTarget,
   { overwrite = false } = {},
 ): Promise<Link> {
+  // Local images would land in the repo as links to files that aren't there, which
+  // can fail the site's build. Until Joyce uploads images, don't send them.
+  const localImages = [...splitTitle(text).body.matchAll(/!\[[^\]]*\]\(\s*<?(?!https?:|data:)([^)\s>]+)/g)];
+  if (localImages.length) {
+    throw new Error(
+      `This post has ${localImages.length === 1 ? "a pasted image" : `${localImages.length} pasted images`}, ` +
+        "which Joyce can't upload to GitHub yet. Remove them, or use images hosted online, to save it.",
+    );
+  }
+
   const stored = getLink(localPath);
   // A link to a different repo or branch (the target was changed) doesn't apply here.
   const link = stored?.repo === target.repo && stored.branch === target.branch ? stored : undefined;

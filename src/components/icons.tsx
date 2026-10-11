@@ -64,3 +64,18 @@ export const ProgressRing = ({ value }: { value: number | null }) => {
 export const PublishIcon = () => (
   <Svg><path d="M8 10.5V2.5M5 5.5l3-3 3 3" /><path d="M2.5 9.5v2.5a1.5 1.5 0 0 0 1.5 1.5h8a1.5 1.5 0 0 0 1.5-1.5V9.5" /></Svg>
 );
+
+export const BookIcon = () => (
+  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M3 2.5h8.5a1.5 1.5 0 0 1 1.5 1.5v9.5H4.5A1.5 1.5 0 0 1 3 12z" />
+    <path d="M3 12a1.5 1.5 0 0 1 1.5-1.5H13M6 5.5h4" />
+  </svg>
+);
+
+export const NewProjectIcon = () => (
+  <Svg>
+    <path d="M3 12V3.5a1 1 0 0 1 1-1h6.5" />
+    <path d="M3 12a1.5 1.5 0 0 0 1.5 1.5H8M3 12a1.5 1.5 0 0 1 1.5-1.5H8" />
+    <path d="M12 8v6M9 11h6" />
+  </Svg>
+);

@@ -1,4 +1,4 @@
-export type Theme = "auto" | "light" | "sepia" | "dark";
+export type Theme = "auto" | "light" | "cream" | "sepia" | "dark";
 
 export interface Settings {
   font: string;
@@ -8,7 +8,13 @@ export interface Settings {
   measure: number;
   theme: Theme;
   sidebar: boolean;
+  /** Sidebar width in pixels. */
+  sidebarWidth: number;
 }
+
+export const SIDEBAR_WIDTH = { min: 180, default: 248, max: 520 };
+export const clampSidebarWidth = (w: number) =>
+  Math.round(Math.min(SIDEBAR_WIDTH.max, Math.max(SIDEBAR_WIDTH.min, w)));
 
 // All of these ship with macOS, so there's nothing to download or license.
 export const FONTS: { name: string; stack: string }[] = [
@@ -37,13 +43,15 @@ export const DEFAULT_SETTINGS: Settings = {
   measure: 66,
   theme: "auto",
   sidebar: true,
+  sidebarWidth: SIDEBAR_WIDTH.default,
 };
 
 const KEY = "joyce:settings";
 
 export function loadSettings(): Settings {
   try {
-    return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(KEY) ?? "{}") };
+    const s = { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(KEY) ?? "{}") };
+    return { ...s, sidebarWidth: clampSidebarWidth(Number(s.sidebarWidth) || SIDEBAR_WIDTH.default) };
   } catch {
     return DEFAULT_SETTINGS;
   }

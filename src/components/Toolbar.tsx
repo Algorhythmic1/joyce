@@ -39,7 +39,7 @@ const GROUPS: Tool[][] = [
   ],
 ];
 
-export type Panel = "type" | "progress" | "publish";
+export type Panel = "type" | "progress" | "publish" | "docGoal";
 
 export function Toolbar({ view, onToggleSidebar, panel, onTogglePanel, todayProgress, hasDoc }: Props) {
   return (

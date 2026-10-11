@@ -1,4 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import type { SectionIcon } from "./sectionIcons";
 import { open } from "@tauri-apps/plugin-dialog";
 
 export interface Entry {
@@ -6,7 +7,20 @@ export interface Entry {
   path: string;
   isDir: boolean;
   children?: Entry[] | null;
+  /** A folder's `.joyce.json`, if any (see projects.ts). */
+  meta?: FolderMeta | null;
+  /** Icon chosen for a section or part (from its project's outline). */
+  icon?: SectionIcon;
 }
+
+export interface FolderMeta {
+  /** This folder is a project: its sections compile into one piece of writing. */
+  project?: boolean;
+  /** Outline of children in their chosen order: names, or `{ name, icon?, children? }`. */
+  order?: unknown[];
+}
+
+export const MANIFEST = ".joyce.json";
 
 export interface Storage {
   pickFolder(): Promise<string | null>;
@@ -17,13 +31,31 @@ export interface Storage {
   createDir(path: string): Promise<void>;
   rename(from: string, to: string): Promise<void>;
   trash(path: string): Promise<void>;
+  /** Saves image bytes (base64) at `path`, creating folders as needed. Never overwrites. */
+  writeImage(path: string, base64: string): Promise<void>;
+  /** A URL the webview can display the image at `path` with. */
+  imageUrl(path: string): string;
+  /** Lets images inside `dir` be displayed. */
+  allowImages(dir: string): Promise<void>;
 }
+
+/** Pasted images are kept in this folder beside their document. */
+export const ASSETS_DIR = "assets";
 
 export const isTauri = "__TAURI_INTERNALS__" in window;
 
 export const basename = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 export const dirname = (p: string) => p.slice(0, p.lastIndexOf("/")) || "/";
 export const join = (dir: string, name: string) => `${dir.replace(/\/$/, "")}/${name}`;
+/** URL-safe name, e.g. "I'm a DPRK soldier" → "i-m-a-dprk-soldier" (the CMS's slug shape). */
+export const slugify = (s: string) =>
+  s
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
 export const isWithin = (path: string, ancestor: string) => path === ancestor || path.startsWith(ancestor + "/");
 export const displayName = (name: string) => name.replace(/\.(md|markdown|txt)$/i, "");
 
@@ -39,6 +71,9 @@ const tauriStorage: Storage = {
   createDir: (path) => invoke("create_dir", { path }),
   rename: (from, to) => invoke("rename_path", { from, to }),
   trash: (path) => invoke("trash_path", { path }),
+  writeImage: (path, base64) => invoke("write_image", { path, base64 }),
+  imageUrl: (path) => convertFileSrc(path),
+  allowImages: (dir) => invoke("allow_images_from", { dir }),
 };
 
 // In a plain browser (e.g. `npm run dev`) we fake a folder in localStorage so the
@@ -63,14 +98,23 @@ function loadDemo(): DemoFs {
 
 const demoStorage: Storage = (() => {
   let state = loadDemo();
+  // Images are only kept for the session; localStorage is too small for them.
+  const images = new Map<string, string>();
   const save = () => localStorage.setItem(DEMO_KEY, JSON.stringify(state));
   const exists = (p: string) => p in state.files || state.dirs.includes(p);
   const build = (dir: string): Entry[] => {
-    const childDirs = state.dirs.filter((d) => dirname(d) === dir && d !== dir);
-    const childFiles = Object.keys(state.files).filter((f) => dirname(f) === dir);
+    const childDirs = state.dirs.filter((d) => dirname(d) === dir && d !== dir && basename(d) !== ASSETS_DIR);
+    const childFiles = Object.keys(state.files).filter((f) => dirname(f) === dir && !basename(f).startsWith("."));
+    const meta = (d: string) => {
+      try {
+        return JSON.parse(state.files[join(d, MANIFEST)] ?? "null");
+      } catch {
+        return null;
+      }
+    };
     const byName = (a: Entry, b: Entry) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
     return [
-      ...childDirs.map((d) => ({ name: basename(d), path: d, isDir: true, children: build(d) })).sort(byName),
+      ...childDirs.map((d) => ({ name: basename(d), path: d, isDir: true, children: build(d), meta: meta(d) })).sort(byName),
       ...childFiles.map((f) => ({ name: basename(f), path: f, isDir: false })).sort(byName),
     ];
   };
@@ -94,14 +138,28 @@ const demoStorage: Storage = (() => {
       save();
     },
     rename: async (from, to) => {
-      if (exists(to)) return fail("Something with that name already exists");
+      if (exists(to) || images.has(to)) return fail("Something with that name already exists");
       const move = (p: string) => (p === from || p.startsWith(from + "/") ? to + p.slice(from.length) : p);
+      for (const [p, url] of [...images]) {
+        if (move(p) !== p) {
+          images.delete(p);
+          images.set(move(p), url);
+        }
+      }
       state = {
         dirs: state.dirs.map(move),
         files: Object.fromEntries(Object.entries(state.files).map(([p, c]) => [move(p), c])),
       };
       save();
     },
+    writeImage: async (path, base64) => {
+      if (images.has(path)) return fail("Already exists");
+      const ext = path.split(".").pop()?.toLowerCase();
+      const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : `image/${ext === "svg" ? "svg+xml" : ext}`;
+      images.set(path, `data:${mime};base64,${base64}`);
+    },
+    imageUrl: (path) => images.get(path) ?? "",
+    allowImages: async () => {},
     trash: async (path) => {
       const inside = (p: string) => p === path || p.startsWith(path + "/");
       state = {

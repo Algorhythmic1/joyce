@@ -2,9 +2,10 @@ import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { EditorView, drawSelection, keymap, type ViewUpdate } from "@codemirror/view";
-import type { Extension } from "@codemirror/state";
+import { EditorState, type Extension } from "@codemirror/state";
 import { tags as t } from "@lezer/highlight";
 import { formattingKeymap } from "./commands";
+import { images, type ImageContext } from "./images";
 
 // Markdown stays visible but recedes: markup characters are muted while the
 // text they affect is styled in place.
@@ -63,8 +64,16 @@ const isWriting = (u: ViewUpdate) =>
         !tr.isUserEvent("input.drop")),
   );
 
-export function editorExtensions(onChange: (doc: string, typed: boolean) => void): Extension[] {
+export function editorExtensions(
+  onChange: (doc: string, typed: boolean) => void,
+  imageContext: ImageContext,
+  { readOnly = false, extra = [] }: { readOnly?: boolean; extra?: Extension } = {},
+): Extension[] {
   return [
+    // Read-only views (a compiled project) can still be selected and copied.
+    readOnly ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : [],
+    extra,
+    images(imageContext),
     history(),
     drawSelection(),
     EditorView.lineWrapping,
