@@ -108,14 +108,28 @@ pub async fn github_device_poll(client_id: String, device_code: String) -> Resul
     }
 }
 
-/// Reuses the account the GitHub CLI is signed in to. Apps launched from Finder
-/// don't get the shell's PATH, so look in the usual install locations.
+/// Finds the GitHub CLI. Apps launched from Finder or a desktop launcher often
+/// don't get the shell's PATH, so the usual install locations are checked too.
+fn find_gh() -> Option<std::path::PathBuf> {
+    let exe = if cfg!(windows) { "gh.exe" } else { "gh" };
+    let from_path = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).map(|d| d.join(exe)).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let known = [
+        "/opt/homebrew/bin/gh",
+        "/usr/local/bin/gh",
+        "/usr/bin/gh",
+        "/home/linuxbrew/.linuxbrew/bin/gh",
+        "C:\\Program Files\\GitHub CLI\\gh.exe",
+    ]
+    .map(std::path::PathBuf::from);
+    from_path.into_iter().chain(known).find(|p| p.is_file())
+}
+
+/// Reuses the account the GitHub CLI is signed in to.
 #[tauri::command]
 pub fn github_import_gh_cli() -> Result<(), String> {
-    let gh = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"]
-        .into_iter()
-        .find(|p| std::path::Path::new(p).exists())
-        .ok_or("The GitHub CLI (gh) isn't installed.")?;
+    let gh = find_gh().ok_or("The GitHub CLI (gh) isn't installed.")?;
     let out = std::process::Command::new(gh).args(["auth", "token"]).output().map_err(err)?;
     let t = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if !out.status.success() || t.is_empty() {
@@ -126,9 +140,7 @@ pub fn github_import_gh_cli() -> Result<(), String> {
 
 #[tauri::command]
 pub fn github_gh_cli_available() -> bool {
-    ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"]
-        .iter()
-        .any(|p| std::path::Path::new(p).exists())
+    find_gh().is_some()
 }
 
 /// Opens a github.com page (the device-code page, a commit) in the default browser.
@@ -137,7 +149,7 @@ pub fn github_open(url: String) -> Result<(), String> {
     if !url.starts_with("https://github.com/") {
         return Err("Only github.com links can be opened".into());
     }
-    std::process::Command::new("open").arg(url).spawn().map(|_| ()).map_err(err)
+    open::that_detached(url).map_err(err)
 }
 
 // --- REST API -------------------------------------------------------------

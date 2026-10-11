@@ -32,7 +32,7 @@
   --icon-edge: rgba(40, 30, 10, 0.28);
 }
 
-:root.tauri {
+:root.tauri.mac {
   --traffic-lights: 78px;
 }
 
@@ -1330,4 +1330,196 @@ body.resizing * {
   cursor: col-resize !important;
   -webkit-user-select: none !important;
   user-select: none !important;
+}
+
+/* --- Sync ----------------------------------------------------------------- */
+
+.sync-panel {
+  width: 340px;
+  gap: 12px;
+}
+
+.sync-panel h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.sync-panel p {
+  margin: 0;
+}
+
+.sync-panel section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sync-panel .segmented.two {
+  margin: 0;
+}
+
+.code-input {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace !important;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sync-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.sync-status .link-button {
+  margin-left: auto;
+}
+
+.sync-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--icon-green);
+}
+
+.sync-status.syncing .sync-dot {
+  background: var(--accent);
+  animation: pulse 1s ease-in-out infinite alternate;
+}
+
+.sync-status.offline .sync-dot {
+  background: var(--muted);
+}
+
+.sync-status.error .sync-dot,
+.sync-status.removed .sync-dot {
+  background: #c2410c;
+}
+
+@keyframes pulse {
+  to {
+    opacity: 0.35;
+  }
+}
+
+.pairing {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+}
+
+.device-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 13px;
+}
+
+.device-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+/* The cloud button: a small status dot when sync is on. */
+.sync-button {
+  position: relative;
+}
+
+.sync-button.sync-idle::after,
+.sync-button.sync-syncing::after,
+.sync-button.sync-offline::after,
+.sync-button.sync-error::after,
+.sync-button.sync-removed::after {
+  content: "";
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  border: 1.5px solid var(--bg);
+  background: var(--icon-green);
+}
+
+.sync-button.sync-syncing::after {
+  background: var(--accent);
+  animation: pulse 1s ease-in-out infinite alternate;
+}
+
+.sync-button.sync-offline::after {
+  background: var(--muted);
+}
+
+.sync-button.sync-error::after,
+.sync-button.sync-removed::after {
+  background: #c2410c;
+}
+
+/* --- Publishing to CMS sites ----------------------------------------------- */
+
+.field-hint {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.file-name {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 12.5px;
+}
+
+.file-name input {
+  flex: 1;
+  min-width: 0;
+}
+
+.field.multi {
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--ui-text);
+  background: var(--hover);
+  cursor: pointer;
+}
+
+.chip input {
+  display: none;
+}
+
+.chip.selected {
+  background: var(--selected);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.site-footer {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.publish-panel {
+  max-height: calc(100% - var(--toolbar-height) - 16px);
 }

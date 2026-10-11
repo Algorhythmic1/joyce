@@ -57,12 +57,38 @@ Click the word count in the bottom corner to give the open document its own leng
 
 Paste a screenshot or copied image, or drag an image file in from Finder, and it's saved in an `assets` folder beside the document and linked with ordinary Markdown (`![](assets/…png)`). The image shows inline at the width of the text; put the cursor on its line to see or edit the Markdown. Moving a document to another folder takes its images along. `assets` folders don't appear in the sidebar.
 
-## Save to GitHub
+## Sync
 
-The upload button in the toolbar saves the open document as a post in a GitHub repo, the same way the site's CMS does: one commit through the GitHub API. It's set up for the Bickerstaff Media site (`AlgorhythmicIndustries/bickerstaff-media-site`, `master`, `src/content/blog/*.mdx`); **Change** points it elsewhere.
+Keeps a writing folder the same on all your computers, through a small server you deploy to your own Cloudflare account (Workers Free plan). Everything is **end-to-end encrypted**: Joyce encrypts contents and file names before upload, so the server only stores ciphertext and opaque ids.
 
-- A leading `# Heading` becomes the post title. Description, tags, author, date and file name are set in the panel and remembered per document.
-- Posts are saved with `draft: true` unless you untick **Draft**. Saving again updates the same file. Front matter Joyce doesn't manage (hero image, featured…) is left alone.
-- If the post was edited on GitHub (e.g. in the CMS) since Joyce last saved it, Joyce asks before overwriting.
-- Sign in with **Use my GitHub CLI account** (if `gh` is logged in), or **Sign in with GitHub** using the client ID of an OAuth app with *Enable Device Flow* turned on. The token is kept in the macOS Keychain and never reaches the web UI.
-- Images aren't uploaded yet, so a post containing pasted images can't be saved to GitHub (it would break the site's build). Images hosted online are fine.
+- **Cloud button → Sync.** On the first computer: *Start syncing this folder*. Then *Show a pairing code*, and on the next computer (with a folder open): *Join with a code*.
+- Changes go up a couple of seconds after you stop typing and arrive on other computers within seconds. Offline edits sync when you're back.
+- If two computers change the same document before syncing, nothing is lost: the other version is saved beside it as `Name (conflict from Computer).md`.
+- Goals, stats, document goals and GitHub links live in a hidden `.joyce/` folder in the writing folder, so they travel too. Each computer keeps its own stats file; totals add them up.
+- Remove a lost computer from the Sync panel, and it can't sync any more.
+
+### Deploying the server
+
+```sh
+cd sync-server
+npm install
+# .env (git-ignored) with an API token from the Cloudflare account to deploy to:
+#   CLOUDFLARE_API_TOKEN=…   (template: "Edit Cloudflare Workers")
+#   CLOUDFLARE_ACCOUNT_ID=…
+npm run deploy
+```
+
+Joyce defaults to `https://joyce-sync.7vwvwnd56t.workers.dev` (set in `src/sync.ts`). The first computer to start syncing claims the server; after that, new computers can only join with a pairing code. To point a build elsewhere, set `VITE_JOYCE_SYNC_SERVER` when building.
+
+## Publish to a site
+
+The upload button publishes the open document as an entry on any site managed with **[Sveltia CMS](https://sveltiacms.app)** (or Decap/Netlify CMS). Those sites keep content in GitHub and describe it in an `admin/config.yml`; Joyce reads that, so nothing about a site is hard-coded.
+
+- **Add a site** by its GitHub repository (`owner/name` or URL). Joyce finds the CMS config anywhere in the repo, and uses its content repo and branch.
+- Pick a **content type** (the CMS's folder collections, e.g. Blog or Podcast). The form is built from its fields: text, dates, toggles, numbers, choices and simple lists, with the CMS's own labels and hints. Fields Joyce can't edit (images, relations, nested objects) are kept exactly as they are.
+- File names follow the collection's template (`{{slug}}`, `ep-{{fields.episodeNumber}}`, `{{year}}-{{month}}-{{slug}}`…), and front matter is written in the CMS's field order.
+- A leading `# Heading` becomes the title. Saving again updates the same entry, starting from any edits made in the CMS since. If the entry changed on GitHub since Joyce last saved it, Joyce asks before overwriting.
+- Collections with a `draft` toggle save drafts by default; Joyce warns before publishing.
+- Joyce won't create entries that would lack a required field it can't fill (like a podcast's audio upload), since that can break the site's build; create those in the CMS, and Joyce can update their text.
+- Sign in with **Use my GitHub CLI account** (if `gh` is logged in), or **Sign in with GitHub** using the client ID of an OAuth app with *Enable Device Flow* on. The token stays in the system's secure storage.
+- Pasted images aren't uploaded yet, so entries containing them can't be saved. Images hosted online are fine.

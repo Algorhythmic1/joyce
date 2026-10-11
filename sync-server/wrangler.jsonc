@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "joyce-sync",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "observability": { "enabled": true },
+  // Everything lives in SQLite-backed Durable Objects, which the Workers Free
+  // plan includes. One Vault per synced writing folder; one Registry for
+  // vault creation and pairing codes.
+  "durable_objects": {
+    "bindings": [
+      { "name": "VAULT", "class_name": "Vault" },
+      { "name": "REGISTRY", "class_name": "Registry" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Vault", "Registry"] }]
+}

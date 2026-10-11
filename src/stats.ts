@@ -1,4 +1,6 @@
 import { useSyncExternalStore } from "react";
+import { join, storage } from "./fs";
+import { FolderStore, STATE_DIR, currentRoot, deviceId, onFolderLoad, useStore } from "./folderState";
 
 /** Net words written and active writing time for one local calendar day. */
 export interface DayStats {
@@ -63,63 +65,116 @@ function prevStart(period: Period, d: Date): Date {
 }
 
 // --- Store ------------------------------------------------------------------
+// Stats and goals live in the writing folder's `.joyce/` (see folderState.ts).
+// Each computer writes only its own stats file; totals add them all up, so two
+// machines never edit the same file.
 
-function load<T>(key: string, fallback: T): T {
+/** Data from before stats moved into the writing folder; adopted once, by the first folder opened. */
+function legacy<T>(key: string, fallback: T): T | null {
+  const migrated = `joyce:migrated:${key}`;
+  if (localStorage.getItem(migrated)) return null;
+  const raw = localStorage.getItem(key);
+  if (!raw) return null;
+  localStorage.setItem(migrated, "1");
   try {
-    const raw = localStorage.getItem(key);
-    return raw ? { ...fallback, ...JSON.parse(raw) } : fallback;
+    return { ...fallback, ...JSON.parse(raw) };
   } catch {
-    return fallback;
+    return null;
   }
 }
 
-let days: Record<string, DayStats> = load(STATS_KEY, {});
-let goals: Goals = load(GOALS_KEY, DEFAULT_GOALS);
-let lastEdit = 0;
-let saveTimer: number | undefined;
-const listeners = new Set<() => void>();
+const parseDays = (raw: unknown): Record<string, DayStats> => {
+  const out: Record<string, DayStats> = {};
+  if (raw && typeof raw === "object") {
+    for (const [k, v] of Object.entries(raw)) {
+      const d = v as Partial<DayStats>;
+      if (/^\d{4}-\d{2}-\d{2}$/.test(k)) out[k] = { words: Number(d?.words) || 0, seconds: Number(d?.seconds) || 0 };
+    }
+  }
+  return out;
+};
 
-const emit = () => listeners.forEach((l) => l());
+const mine = new FolderStore<Record<string, DayStats>>({
+  file: () => `stats/${deviceId}.json`,
+  fallback: {},
+  parse: parseDays,
+  legacy: () => legacy(STATS_KEY, {}),
+});
+
+const goalsStore = new FolderStore<Goals>({
+  file: "goals.json",
+  fallback: DEFAULT_GOALS,
+  parse: (raw) => ({ ...DEFAULT_GOALS, ...(raw as Partial<Goals>) }),
+  legacy: () => legacy(GOALS_KEY, DEFAULT_GOALS),
+});
+
+/** Stats written by other computers, read-only here. */
+let others: Record<string, DayStats>[] = [];
+
+onFolderLoad(async () => {
+  const dir = currentRoot();
+  if (!dir) return void (others = []);
+  const statsDir = join(join(dir, STATE_DIR), "stats");
+  const files = (await storage.listFiles(statsDir).catch(() => [])).filter(
+    (f) => f.endsWith(".json") && f !== `${deviceId}.json`,
+  );
+  others = await Promise.all(
+    files.map((f) => storage.read(join(statsDir, f)).then((t) => parseDays(JSON.parse(t)), () => ({}))),
+  );
+  recomputeDays();
+});
+
+let days: Record<string, DayStats> = {};
+const listeners = new Set<() => void>();
 const subscribe = (l: () => void) => (listeners.add(l), () => void listeners.delete(l));
 
-function persistDays() {
-  clearTimeout(saveTimer);
-  saveTimer = undefined;
-  localStorage.setItem(STATS_KEY, JSON.stringify(days));
+function recomputeDays() {
+  const merged: Record<string, DayStats> = {};
+  for (const source of [mine.get(), ...others]) {
+    for (const [k, d] of Object.entries(source)) {
+      const m = (merged[k] ??= { words: 0, seconds: 0 });
+      m.words += d.words;
+      m.seconds += d.seconds;
+    }
+  }
+  days = merged;
+  listeners.forEach((l) => l());
 }
-window.addEventListener("beforeunload", () => saveTimer !== undefined && persistDays());
+mine.subscribe(recomputeDays);
+
+let lastEdit = 0;
 
 /** Records a change in word count caused by the writer's own typing. */
 export function recordWriting(wordDelta: number) {
   const now = Date.now();
   const key = dayKey(new Date(now));
-  const today = days[key] ?? { words: 0, seconds: 0 };
+  const all = mine.get();
+  const today = all[key] ?? { words: 0, seconds: 0 };
   const gap = now - lastEdit;
   lastEdit = now;
-  days = {
-    ...days,
-    [key]: {
-      words: today.words + wordDelta,
-      seconds: today.seconds + (gap < IDLE_GAP_MS ? gap / 1000 : 0),
-    },
-  };
   // Writes happen on every keystroke; batch them to disk.
-  saveTimer ??= window.setTimeout(persistDays, 1000);
-  emit();
+  mine.set(
+    {
+      ...all,
+      [key]: {
+        words: today.words + wordDelta,
+        seconds: today.seconds + (gap < IDLE_GAP_MS ? gap / 1000 : 0),
+      },
+    },
+    { saveAfterMs: 5000 },
+  );
 }
 
 export const msSinceLastEdit = () => Date.now() - lastEdit;
 
 export function updateGoals(patch: Partial<Goals>) {
-  goals = { ...goals, ...patch };
-  localStorage.setItem(GOALS_KEY, JSON.stringify(goals));
-  emit();
+  goalsStore.set({ ...goalsStore.get(), ...patch });
 }
 
 export const useDays = () => useSyncExternalStore(subscribe, () => days);
-export const useGoals = () => useSyncExternalStore(subscribe, () => goals);
+export const useGoals = () => useStore(goalsStore);
 export const getDays = () => days;
-export const getGoals = () => goals;
+export const getGoals = () => goalsStore.get();
 
 // --- Derived numbers --------------------------------------------------------
 

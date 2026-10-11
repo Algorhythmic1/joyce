@@ -7,7 +7,7 @@ import { storage } from "../fs";
 
 interface Props {
   initial: string;
-  onChange: (doc: string, typed: boolean) => void;
+  onChange: (doc: string, typed: boolean, fromSync: boolean) => void;
   onReady: (view: EditorView | null) => void;
   autoFocus: boolean;
   /** Folder of the document, for resolving relative image paths. */
@@ -32,7 +32,7 @@ export function Editor({ initial, onChange, onReady, autoFocus, dir, saveImage, 
       parent: host.current!,
       state: EditorState.create({
         doc: initial,
-        extensions: editorExtensions((doc, typed) => onChangeRef.current(doc, typed), imageContext(dir), { readOnly, extra }),
+        extensions: editorExtensions((doc, typed, fromSync) => onChangeRef.current(doc, typed, fromSync), imageContext(dir), { readOnly, extra }),
       }),
     });
     viewRef.current = view;

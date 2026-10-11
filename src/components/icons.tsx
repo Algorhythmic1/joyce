@@ -79,3 +79,9 @@ export const NewProjectIcon = () => (
     <path d="M12 8v6M9 11h6" />
   </Svg>
 );
+
+export const CloudIcon = () => (
+  <Svg>
+    <path d="M4.5 12.5h7.2a2.8 2.8 0 0 0 .5-5.55A4.2 4.2 0 0 0 4.1 6.3 3.1 3.1 0 0 0 4.5 12.5z" />
+  </Svg>
+);

@@ -3,6 +3,7 @@ import type { EditorView } from "@codemirror/view";
 import { Editor } from "./components/Editor";
 import { Sidebar, type CreateKind } from "./components/Sidebar";
 import { sectionMarks } from "./editor/sections";
+import { SYNC_EVENT } from "./editor/setup";
 import type { SectionIcon } from "./sectionIcons";
 import {
   applyOrder, compileProject, descendantsOf, findEntry, initProject, insertIntoOrder, isOrdered, makeProject, placeInOrder,
@@ -16,6 +17,9 @@ import { countChars, forgetDocGoals, goalState, moveDocGoals, useDocGoal } from 
 import { SettingsPanel } from "./components/SettingsPanel";
 import { ProgressPanel } from "./components/ProgressPanel";
 import { startReminders } from "./reminders";
+import { bindFolder, reloadFolderState, toRel } from "./folderState";
+import { SyncPanel, statusText } from "./components/SyncPanel";
+import { onRemoteChanges, useSync } from "./sync";
 import { goalFor, periodTotal, recordWriting, useDays, useGoals, type Period } from "./stats";
 import { ASSETS_DIR, allPaths, basename, dirname, displayName, isWithin, join, slugify, storage, uniquePath, type Entry } from "./fs";
 import { fontStack, loadSettings, saveSettings, type Settings } from "./settings";
@@ -86,13 +90,15 @@ export default function App() {
   // Word count of the open document as of the last change, for measuring each edit.
   const lastCount = useRef(0);
 
-  const onChange = (text: string, typed: boolean) => {
+  const onChange = (text: string, typed: boolean, fromSync = false) => {
     if (!doc) return;
     const count = countWords(text);
     if (typed) recordWriting(count - lastCount.current);
     lastCount.current = count;
     setWords(count);
     setChars(countChars(text));
+    // Another computer's edit is already on disk; nothing to save.
+    if (fromSync) return;
     pending.current = { path: doc.path, text };
     clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(flush, SAVE_DELAY);
@@ -139,6 +145,8 @@ export default function App() {
   useEffect(() => {
     if (!root) return;
     storage.allowImages(root).catch(report);
+    // Goals, stats and other app data that live in the writing folder.
+    bindFolder(root).catch(report);
     refresh();
     const last = localStorage.getItem(LAST_KEY);
     if (last && isWithin(last, root)) openFile(last);
@@ -389,6 +397,44 @@ export default function App() {
     }
   };
 
+  // --- Sync -------------------------------------------------------------------
+  const sync = useSync();
+  // Latest values for the long-lived listener below.
+  const latest = useRef({ doc, view, tree, refresh, flush });
+  latest.current = { doc, view, tree, refresh, flush };
+
+  useEffect(
+    () =>
+      onRemoteChanges(async (paths) => {
+        const { doc, view, tree, refresh, flush } = latest.current;
+        await refresh();
+        if (paths.some((p) => p.startsWith(".joyce/"))) await reloadFolderState();
+        const rel = doc && toRel(doc.path);
+        if (!doc || !rel || !paths.includes(rel)) return;
+        const text = await storage.read(doc.path).catch(() => null);
+        if (text === null) return;
+        if (pending.current?.path === doc.path) {
+          // Typing here hasn't been saved yet, and a change arrived from elsewhere:
+          // keep theirs beside this document, then save ours as the newest.
+          const ext = basename(doc.path).match(TEXT_EXT)?.[0] ?? ".md";
+          const copy = uniquePath(dirname(doc.path), `${displayName(basename(doc.path))} (from another computer)`, ext, allPaths(tree));
+          await storage.write(copy, text);
+          await flush();
+          await refresh();
+          return;
+        }
+        if (!view || view.state.doc.toString() === text) return;
+        // Show the other computer's version in place, keeping the cursor about where it was.
+        const head = Math.min(view.state.selection.main.head, text.length);
+        view.dispatch({
+          changes: { from: 0, to: view.state.doc.length, insert: text },
+          selection: { anchor: head },
+          userEvent: SYNC_EVENT,
+        });
+      }),
+    [],
+  );
+
   // --- Settings & chrome ----------------------------------------------------
   const updateSettings = (patch: Partial<Settings>) =>
     setSettings((s) => {
@@ -539,10 +585,13 @@ export default function App() {
           panel={panel}
           onTogglePanel={(p) => setPanel((open) => (open === p ? null : p))}
           todayProgress={goals.daily ? today / goals.daily : null}
+          syncState={sync.info?.enabled ? (sync.info.status?.state ?? "syncing") : null}
+          syncTitle={sync.info?.enabled ? `Sync: ${statusText(sync.info.status)}` : "Sync"}
           hasDoc={!!doc}
         />
         {panel === "type" && <SettingsPanel settings={settings} onChange={updateSettings} />}
         {panel === "progress" && <ProgressPanel />}
+        {panel === "sync" && <SyncPanel info={sync.info} reload={sync.reload} root={root} />}
         {panel === "docGoal" && doc && <DocGoalPanel key={doc.path} path={doc.path} goal={docGoal} words={words} chars={chars} />}
         {panel === "publish" && doc && (
           <PublishPanel localPath={doc.path} getText={() => view?.state.doc.toString() ?? doc.text} />

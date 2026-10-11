@@ -1,4 +1,5 @@
 mod github;
+mod sync;
 
 use serde::Serialize;
 use std::fs;
@@ -27,6 +28,13 @@ fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
+/// Paths go to the UI with `/` separators on every OS, so it can treat them alike
+/// (Windows accepts `/` too when they come back).
+pub(crate) fn slash_path(p: &Path) -> String {
+    let s = p.to_string_lossy().into_owned();
+    if cfg!(windows) { s.replace('\\', "/") } else { s }
+}
+
 fn is_text_file(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
@@ -49,7 +57,7 @@ fn read_tree(dir: &Path) -> Result<Vec<Entry>, String> {
         }
         entries.push(Entry {
             name,
-            path: path.to_string_lossy().into_owned(),
+            path: slash_path(&path),
             is_dir,
             // Unreadable subfolders shouldn't take down the whole tree.
             children: if is_dir { Some(read_tree(&path).unwrap_or_default()) } else { None },
@@ -85,10 +93,26 @@ fn write_file(path: String, contents: String) -> Result<(), String> {
     let target = PathBuf::from(&path);
     let name = target.file_name().ok_or("invalid path")?.to_string_lossy();
     let tmp = target.with_file_name(format!(".{name}.joyce-tmp"));
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(err)?;
+    }
     let mut file = fs::File::create(&tmp).map_err(err)?;
     file.write_all(contents.as_bytes()).map_err(err)?;
     file.sync_all().map_err(err)?;
-    fs::rename(&tmp, &target).map_err(err)
+    fs::rename(&tmp, &target).map_err(err)?;
+    sync::nudge();
+    Ok(())
+}
+
+/// Names of the files directly inside `dir` (none if it doesn't exist).
+#[tauri::command]
+fn list_files(dir: String) -> Result<Vec<String>, String> {
+    let Ok(items) = fs::read_dir(&dir) else { return Ok(vec![]) };
+    Ok(items
+        .filter_map(|i| i.ok())
+        .filter(|i| i.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .map(|i| i.file_name().to_string_lossy().into_owned())
+        .collect())
 }
 
 #[tauri::command]
@@ -97,7 +121,7 @@ fn create_file(path: String) -> Result<(), String> {
         .write(true)
         .create_new(true)
         .open(path)
-        .map(|_| ())
+        .map(|_| sync::nudge())
         .map_err(err)
 }
 
@@ -115,7 +139,9 @@ fn rename_path(from: String, to: String) -> Result<(), String> {
     if let Some(parent) = Path::new(&to).parent() {
         fs::create_dir_all(parent).map_err(err)?;
     }
-    fs::rename(from, to).map_err(err)
+    fs::rename(from, to).map_err(err)?;
+    sync::nudge();
+    Ok(())
 }
 
 /// Saves a pasted image. Never overwrites, and creates the assets folder as needed.
@@ -127,7 +153,9 @@ fn write_image(path: String, base64: String) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(err)?;
     }
     let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(err)?;
-    file.write_all(&bytes).map_err(err)
+    file.write_all(&bytes).map_err(err)?;
+    sync::nudge();
+    Ok(())
 }
 
 /// Lets the webview display images from the writing folder (and nowhere else).
@@ -139,7 +167,9 @@ fn allow_images_from(app: tauri::AppHandle, dir: String) -> Result<(), String> {
 
 #[tauri::command]
 fn trash_path(path: String) -> Result<(), String> {
-    trash::delete(path).map_err(err)
+    trash::delete(path).map_err(err)?;
+    sync::nudge();
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -151,6 +181,7 @@ pub fn run() {
             list_tree,
             read_file,
             write_file,
+            list_files,
             create_file,
             create_dir,
             rename_path,
@@ -164,8 +195,20 @@ pub fn run() {
             github::github_import_gh_cli,
             github::github_gh_cli_available,
             github::github_open,
-            github::github_api
+            github::github_api,
+            sync::sync_info,
+            sync::sync_enable,
+            sync::sync_join,
+            sync::sync_pairing_code,
+            sync::sync_devices,
+            sync::sync_remove_device,
+            sync::sync_disable,
+            sync::sync_now
         ])
+        .setup(|app| {
+            sync::init(app.handle().clone());
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running Joyce");
 }

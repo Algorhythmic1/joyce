@@ -2,7 +2,7 @@ import type { EditorView } from "@codemirror/view";
 import {
   insertLink, setHeading, toggleBullets, toggleInline, toggleNumbers, toggleQuote,
 } from "../editor/commands";
-import { BulletsIcon, CodeIcon, LinkIcon, NumbersIcon, ProgressRing, PublishIcon, QuoteIcon, SidebarIcon } from "./icons";
+import { BulletsIcon, CloudIcon, CodeIcon, LinkIcon, NumbersIcon, ProgressRing, PublishIcon, QuoteIcon, SidebarIcon } from "./icons";
 
 interface Props {
   view: EditorView | null;
@@ -13,6 +13,9 @@ interface Props {
   hasDoc: boolean;
   /** Fraction of today's goal written, or null without a daily goal. */
   todayProgress: number | null;
+  /** Sync state for the cloud button: null when sync is off. */
+  syncState: string | null;
+  syncTitle: string;
 }
 
 type Tool = { label: React.ReactNode; title: string; run: (v: EditorView) => boolean };
@@ -39,9 +42,9 @@ const GROUPS: Tool[][] = [
   ],
 ];
 
-export type Panel = "type" | "progress" | "publish" | "docGoal";
+export type Panel = "type" | "progress" | "publish" | "docGoal" | "sync";
 
-export function Toolbar({ view, onToggleSidebar, panel, onTogglePanel, todayProgress, hasDoc }: Props) {
+export function Toolbar({ view, onToggleSidebar, panel, onTogglePanel, todayProgress, hasDoc, syncState, syncTitle }: Props) {
   return (
     <header className="toolbar" data-tauri-drag-region>
       <button className="icon-button sidebar-toggle" onClick={onToggleSidebar} title="Toggle sidebar (⌘\)">
@@ -67,12 +70,20 @@ export function Toolbar({ view, onToggleSidebar, panel, onTogglePanel, todayProg
         ))}
       </div>
       <div className="panel-buttons">
+        <button
+          className={`icon-button sync-button${panel === "sync" ? " active" : ""}${syncState ? ` sync-${syncState}` : ""}`}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={() => onTogglePanel("sync")}
+          title={syncTitle}
+        >
+          <CloudIcon />
+        </button>
         {hasDoc && (
           <button
             className={`icon-button${panel === "publish" ? " active" : ""}`}
             onMouseDown={(e) => e.stopPropagation()}
             onClick={() => onTogglePanel("publish")}
-            title="Save to GitHub"
+            title="Publish to a site"
           >
             <PublishIcon />
           </button>

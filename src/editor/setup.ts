@@ -64,8 +64,11 @@ const isWriting = (u: ViewUpdate) =>
         !tr.isUserEvent("input.drop")),
   );
 
+/** User event for edits that arrived from another computer (already on disk). */
+export const SYNC_EVENT = "sync";
+
 export function editorExtensions(
-  onChange: (doc: string, typed: boolean) => void,
+  onChange: (doc: string, typed: boolean, fromSync: boolean) => void,
   imageContext: ImageContext,
   { readOnly = false, extra = [] }: { readOnly?: boolean; extra?: Extension } = {},
 ): Extension[] {
@@ -83,7 +86,10 @@ export function editorExtensions(
     surface,
     keymap.of([...formattingKeymap, ...defaultKeymap, ...historyKeymap, indentWithTab]),
     EditorView.updateListener.of((u) => {
-      if (u.docChanged) onChange(u.state.doc.toString(), isWriting(u));
+      if (u.docChanged) {
+        const fromSync = u.transactions.every((tr) => !tr.docChanged || tr.isUserEvent(SYNC_EVENT));
+        onChange(u.state.doc.toString(), isWriting(u), fromSync);
+      }
     }),
   ];
 }

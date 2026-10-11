@@ -1,169 +1,167 @@
 import { invoke } from "@tauri-apps/api/core";
-import { parseDocument, stringify } from "yaml";
-import { basename, displayName, isTauri, slugify } from "../fs";
+import { isTauri, slugify } from "../fs";
+import { FolderStore, dropKeys, rekey, toRel } from "../folderState";
+import {
+  buildEntry, entryPath, looksLikeCmsConfig, parseConfig, parseEntry, unfillable, type Collection, type SiteConfig, type Values,
+} from "./sveltia";
 
-/** Where posts go. Defaults match the Bickerstaff Media (Astrolabe) Astro site. */
-export interface GithubTarget {
+/*
+ * Publishing documents as entries on sites managed with Sveltia CMS (or
+ * Decap/Netlify CMS): sites keep their content in GitHub, and describe their
+ * content types in an `admin/config.yml`. Joyce reads that config, so any such
+ * site works without set-up beyond naming its repository.
+ */
+
+/** A site Joyce can publish to. */
+export interface Site {
+  id: string;
+  name: string;
+  /** Repository the content lives in, from the config's `backend.repo`. */
   repo: string;
   branch: string;
-  folder: string;
-  extension: "mdx" | "md";
-  author: string;
-  /** Client ID of a GitHub OAuth app with Device Flow enabled. */
-  clientId: string;
+  /** Where the CMS config lives (it can be a different repo in principle). */
+  configRepo: string;
+  configPath: string;
+  siteUrl?: string;
 }
 
-export interface PostFields {
-  title: string;
-  slug: string;
-  description: string;
-  tags: string[];
-  author: string;
-  /** YYYY-MM-DD */
-  pubDate: string;
-  draft: boolean;
-}
-
-/** What we remember about a local document's post, keyed by its local path. */
+/** What Joyce remembers about a document's entry on a site, keyed by the document's path. */
 export interface Link {
-  fields: PostFields;
+  site: string;
+  collection: string;
+  values: Values;
+  /** Repo-relative path of the entry, once saved. */
+  path?: string;
+  /** Blob SHA Joyce last wrote; used to notice edits made elsewhere (e.g. in the CMS). */
+  sha?: string;
+  savedAt?: number;
+  commitUrl?: string;
   repo?: string;
   branch?: string;
-  /** Repo-relative path of the post, once saved. */
+}
+
+interface GithubState {
+  sites: Site[];
+  /** Client ID of a GitHub OAuth app with Device Flow enabled, for "Sign in with GitHub". */
+  clientId: string;
+  links: Record<string, Link>;
+}
+
+const FALLBACK: GithubState = { sites: [], clientId: "", links: {} };
+
+// Before sites were read from CMS configs, Joyce had one hard-coded target
+// (the Bickerstaff blog). Those settings and post links carry over.
+interface OldTarget {
+  repo?: string;
+  branch?: string;
+  author?: string;
+  clientId?: string;
+}
+interface OldLink {
+  fields?: Record<string, unknown> & { slug?: string };
+  repo?: string;
+  branch?: string;
   path?: string;
-  /** Blob SHA we last wrote; used to notice edits made elsewhere (e.g. in the CMS). */
   sha?: string;
   savedAt?: number;
   commitUrl?: string;
 }
 
-export const DEFAULT_TARGET: GithubTarget = {
-  repo: "AlgorhythmicIndustries/bickerstaff-media-site",
-  branch: "master",
-  folder: "src/content/blog",
-  extension: "mdx",
-  author: "Bickerstaff Media",
-  clientId: "",
-};
+function migrate(target: OldTarget | undefined, links: Record<string, OldLink>): GithubState {
+  const repo = target?.repo ?? "AlgorhythmicIndustries/bickerstaff-media-site";
+  const site: Site = {
+    id: slugify(repo),
+    name: "Bickerstaff Media",
+    repo,
+    branch: target?.branch ?? "master",
+    configRepo: repo,
+    configPath: "", // Found on first use.
+  };
+  const converted = Object.fromEntries(
+    Object.entries(links).map(([path, l]) => {
+      const { slug: _slug, ...values } = l.fields ?? {};
+      const link: Link = { site: site.id, collection: "blog", values, path: l.path, sha: l.sha, savedAt: l.savedAt, commitUrl: l.commitUrl, repo: l.repo, branch: l.branch };
+      return [path, link];
+    }),
+  );
+  return { sites: [site], clientId: target?.clientId ?? "", links: converted };
+}
 
-const TARGET_KEY = "joyce:github-target";
-const LINKS_KEY = "joyce:github-links";
+const store = new FolderStore<GithubState>({
+  file: "github.json",
+  fallback: FALLBACK,
+  parse: (raw) => {
+    const r = (raw ?? {}) as Partial<GithubState> & { target?: OldTarget };
+    if (!r.sites && r.target) return migrate(r.target, (r.links ?? {}) as Record<string, OldLink>);
+    return { sites: r.sites ?? [], clientId: r.clientId ?? "", links: r.links ?? {} };
+  },
+  legacy: () => {
+    try {
+      const target = localStorage.getItem("joyce:github-target");
+      const old = JSON.parse(localStorage.getItem("joyce:github-links") ?? "{}") as Record<string, OldLink>;
+      const links = Object.fromEntries(
+        Object.entries(old).flatMap(([abs, l]) => {
+          const rel = toRel(abs);
+          return rel ? [[rel, l] as const] : [];
+        }),
+      );
+      return target || Object.keys(links).length ? migrate(target ? JSON.parse(target) : undefined, links) : null;
+    } catch {
+      return null;
+    }
+  },
+});
 
 export const available = isTauri;
 
-export function loadTarget(): GithubTarget {
-  try {
-    return { ...DEFAULT_TARGET, ...JSON.parse(localStorage.getItem(TARGET_KEY) ?? "{}") };
-  } catch {
-    return DEFAULT_TARGET;
-  }
-}
-export const saveTarget = (t: GithubTarget) => localStorage.setItem(TARGET_KEY, JSON.stringify(t));
+export const getSites = () => store.get().sites;
+export const subscribeSites = store.subscribe;
+export const getClientId = () => store.get().clientId;
+export const setClientId = (clientId: string) => store.set({ ...store.get(), clientId });
 
-function loadLinks(): Record<string, Link> {
-  try {
-    return JSON.parse(localStorage.getItem(LINKS_KEY) ?? "{}");
-  } catch {
-    return {};
-  }
+function updateSite(site: Site) {
+  const sites = store.get().sites;
+  store.set({ ...store.get(), sites: sites.some((s) => s.id === site.id) ? sites.map((s) => (s.id === site.id ? site : s)) : [...sites, site] });
 }
-const saveLinks = (links: Record<string, Link>) => localStorage.setItem(LINKS_KEY, JSON.stringify(links));
 
-export const getLink = (localPath: string): Link | undefined => loadLinks()[localPath];
+export function removeSite(id: string) {
+  store.set({ ...store.get(), sites: store.get().sites.filter((s) => s.id !== id) });
+}
+
+const links = () => store.get().links;
+const saveLinks = (next: Record<string, Link>) => store.set({ ...store.get(), links: next });
+
+export const getLink = (localPath: string): Link | undefined => {
+  const rel = toRel(localPath);
+  return rel ? links()[rel] : undefined;
+};
 
 export function setLink(localPath: string, link: Link) {
-  saveLinks({ ...loadLinks(), [localPath]: link });
+  const rel = toRel(localPath);
+  if (rel) saveLinks({ ...links(), [rel]: link });
 }
 
 /** Keeps links attached when a document, or a folder containing documents, is renamed. */
 export function moveLinks(from: string, to: string) {
-  const links = loadLinks();
-  const moved = Object.fromEntries(
-    Object.entries(links).map(([p, l]) => [p === from || p.startsWith(from + "/") ? to + p.slice(from.length) : p, l]),
-  );
-  saveLinks(moved);
+  const [a, b] = [toRel(from), toRel(to)];
+  if (a && b) saveLinks(rekey(links(), a, b));
 }
 
 export function forgetLinks(path: string) {
-  saveLinks(Object.fromEntries(Object.entries(loadLinks()).filter(([p]) => p !== path && !p.startsWith(path + "/"))));
+  const rel = toRel(path);
+  if (rel) saveLinks(dropKeys(links(), rel));
 }
 
-// --- Converting a document into a post ------------------------------------
+// --- Converting a document into an entry -----------------------------------------
 
-/** A leading `# Heading` is the post title; the site renders the title itself. */
+/** A leading `# Heading` is the entry's title; the site renders the title itself. */
 export function splitTitle(text: string): { title: string | null; body: string } {
   const m = text.match(/^\s*#[ \t]+(.+?)[ \t#]*(?:\r?\n|$)/);
   if (!m) return { title: null, body: text };
   return { title: m[1].trim(), body: text.slice(m[0].length).replace(/^\s*\n/, "") };
 }
 
-export { slugify };
-
-/**
- * MDX treats `<` and `{` as JSX. Prose can contain both ("x < y", "{sic}"), so
- * escape them everywhere except inside code, where they're already literal.
- */
-export function escapeMdx(body: string): string {
-  let inFence = false;
-  return body
-    .split("\n")
-    .map((line) => {
-      if (/^\s*(```|~~~)/.test(line)) {
-        inFence = !inFence;
-        return line;
-      }
-      if (inFence) return line;
-      return line
-        .split(/(`+[^`]*`+)/)
-        .map((part, i) => (i % 2 ? part : part.replace(/(?<!\\)([<{}])/g, "\\$1")))
-        .join("");
-    })
-    .join("\n");
-}
-
-const today = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-};
-
-export function defaultFields(localPath: string, text: string, target: GithubTarget): PostFields {
-  const title = splitTitle(text).title ?? displayName(basename(localPath));
-  return { title, slug: slugify(title), description: "", tags: [], author: target.author, pubDate: today(), draft: true };
-}
-
-/**
- * Builds the file. Front matter keys that Joyce doesn't manage (hero image,
- * featured, updatedDate…) are kept from the existing post, in their original order.
- */
-export function buildPostFile(fields: PostFields, text: string, target: GithubTarget, existing?: string): string {
-  const prior = existing ? parsePostFile(existing).data : {};
-  const managed = {
-    title: fields.title,
-    description: fields.description,
-    pubDate: fields.pubDate,
-    author: fields.author,
-    tags: fields.tags,
-    draft: fields.draft,
-  };
-  const data: Record<string, unknown> = existing ? { ...prior, ...managed } : { ...managed, featured: false };
-  if (!existing) {
-    // New posts follow the CMS's field order, with draft last.
-    delete data.draft;
-    data.draft = fields.draft;
-  }
-  let body = splitTitle(text).body.trim();
-  if (target.extension === "mdx") body = escapeMdx(body);
-  return `---\n${stringify(data, { lineWidth: 0 })}---\n\n${body}\n`;
-}
-
-export function parsePostFile(content: string): { data: Record<string, unknown>; body: string } {
-  const m = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
-  if (!m) return { data: {}, body: content };
-  const data = parseDocument(m[1]).toJS() ?? {};
-  return { data, body: content.slice(m[0].length) };
-}
-
-// --- GitHub API -----------------------------------------------------------
+// --- GitHub API -----------------------------------------------------------------
 
 interface ApiResponse {
   status: number;
@@ -211,16 +209,21 @@ export interface Account {
   canPush: boolean;
 }
 
-export async function account(target: GithubTarget): Promise<Account> {
-  const [user, repo] = await Promise.all([api("GET", "/user"), api("GET", `/repos/${target.repo}`)]);
+export async function account(repo: string): Promise<Account> {
+  const [user, r] = await Promise.all([api("GET", "/user"), api("GET", `/repos/${repo}`)]);
   if (user.status !== 200) throw apiError(user, "Checking your GitHub account");
-  if (repo.status === 404) throw new Error(`Can't find ${target.repo}, or your account can't see it.`);
-  if (repo.status !== 200) throw apiError(repo, "Checking the repository");
-  return { login: user.body.login, canPush: !!repo.body.permissions?.push };
+  if (r.status === 404) throw new Error(`Can't find ${repo}, or your account can't see it.`);
+  if (r.status !== 200) throw apiError(r, "Checking the repository");
+  return { login: user.body.login, canPush: !!r.body.permissions?.push };
 }
 
-const contentsPath = (target: GithubTarget, path: string) =>
-  `/repos/${target.repo}/contents/${path.split("/").map(encodeURIComponent).join("/")}`;
+export const signedInLogin = async () => {
+  const user = await api("GET", "/user");
+  if (user.status !== 200) throw apiError(user, "Checking your GitHub account");
+  return user.body.login as string;
+};
+
+const contentsPath = (repo: string, path: string) => `/repos/${repo}/contents/${path.split("/").map(encodeURIComponent).join("/")}`;
 
 function fromBase64(b64: string) {
   const bin = atob(b64.replace(/\s/g, ""));
@@ -234,12 +237,107 @@ function toBase64(text: string) {
   return btoa(bin);
 }
 
-async function getFile(target: GithubTarget, path: string): Promise<{ sha: string; content: string } | null> {
-  const res = await api("GET", `${contentsPath(target, path)}?ref=${encodeURIComponent(target.branch)}`);
+async function getFile(repo: string, branch: string, path: string): Promise<{ sha: string; content: string } | null> {
+  const res = await api("GET", `${contentsPath(repo, path)}?ref=${encodeURIComponent(branch)}`);
   if (res.status === 404) return null;
-  if (res.status !== 200) throw apiError(res, "Reading the post from GitHub");
+  if (res.status !== 200) throw apiError(res, "Reading from GitHub");
   return { sha: res.body.sha, content: fromBase64(res.body.content) };
 }
+
+// --- Finding and reading a site's CMS config ---------------------------------------
+
+/** Accepts `owner/name`, a github.com URL, or a git remote. */
+export function parseRepo(input: string): string | null {
+  const s = input.trim().replace(/\.git$/, "");
+  const m = s.match(/^(?:https?:\/\/github\.com\/|git@github\.com:)?([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)(?:\/.*)?$/);
+  return m ? `${m[1]}/${m[2]}` : null;
+}
+
+/**
+ * Finds a repository's CMS config. Sveltia and Decap configs are usually at
+ * `admin/config.yml` under the folder the site serves (`public/`, `static/`…),
+ * but can be anywhere, so look through the whole tree.
+ */
+export async function findSite(input: string): Promise<{ site: Site; config: SiteConfig }> {
+  const named = parseRepo(input);
+  if (!named) throw new Error("Enter a GitHub repository, like owner/name or its github.com address.");
+  const r = await api("GET", `/repos/${named}`);
+  if (r.status === 404) throw new Error(`Can't find ${named}, or your GitHub account can't see it.`);
+  if (r.status !== 200) throw apiError(r, "Looking up the repository");
+  const repo: string = r.body.full_name; // Follows renames.
+  const branch: string = r.body.default_branch;
+
+  const tree = await api("GET", `/repos/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`);
+  if (tree.status !== 200) throw apiError(tree, "Reading the repository's files");
+  const candidates = (tree.body.tree as { path: string; type: string }[])
+    .filter((t) => t.type === "blob" && /(^|\/)config\.ya?ml$/.test(t.path) && /(^|\/)(admin|cms)(\/|$)/i.test(t.path))
+    .filter((t) => !/(^|\/)node_modules\//.test(t.path))
+    .map((t) => t.path)
+    .sort((a, b) => a.split("/").length - b.split("/").length);
+
+  for (const path of candidates.slice(0, 8)) {
+    const file = await getFile(repo, branch, path);
+    if (!file || !looksLikeCmsConfig(file.content)) continue;
+    const config = parseConfig(file.content);
+    const contentRepo = config.repo ?? repo;
+    const site: Site = {
+      id: slugify(contentRepo),
+      name: siteName(config, contentRepo),
+      repo: contentRepo,
+      branch: config.branch ?? branch,
+      configRepo: repo,
+      configPath: path,
+      siteUrl: config.siteUrl,
+    };
+    return { site, config };
+  }
+  throw new Error(`No Sveltia or Decap CMS config (admin/config.yml) found in ${repo}.`);
+}
+
+function siteName(config: SiteConfig, repo: string) {
+  if (config.siteUrl) {
+    try {
+      return new URL(config.siteUrl).hostname.replace(/^www\./, "");
+    } catch {
+      // Not a URL; fall back to the repository name.
+    }
+  }
+  return repo.split("/")[1];
+}
+
+export async function addSite(input: string): Promise<Site> {
+  const { site, config } = await findSite(input);
+  configCache.set(site.id, config);
+  updateSite(site);
+  return site;
+}
+
+const configCache = new Map<string, SiteConfig>();
+
+/** A site's current config (fetched fresh, so changes to the site's CMS show up). */
+export async function loadSiteConfig(site: Site): Promise<SiteConfig> {
+  if (!site.configPath) {
+    // Carried over from before configs were read; find it now.
+    const found = await findSite(site.configRepo || site.repo);
+    updateSite({ ...found.site, id: site.id, name: site.name === "Bickerstaff Media" ? found.site.name : site.name });
+    configCache.set(site.id, found.config);
+    return found.config;
+  }
+  try {
+    const file = await getFile(site.configRepo, site.branch, site.configPath);
+    if (!file) throw new Error(`The CMS config at ${site.configPath} is gone.`);
+    const config = parseConfig(file.content);
+    configCache.set(site.id, config);
+    return config;
+  } catch (e) {
+    // Offline or briefly unavailable: the last config read still describes the site.
+    const cached = configCache.get(site.id);
+    if (cached) return cached;
+    throw e;
+  }
+}
+
+// --- Saving ------------------------------------------------------------------------
 
 /** Thrown when saving would clobber something; the user can retry with `overwrite`. */
 export class SaveConflict extends Error {
@@ -248,69 +346,84 @@ export class SaveConflict extends Error {
   }
 }
 
-export async function savePost(
-  localPath: string,
-  text: string,
-  fields: PostFields,
-  target: GithubTarget,
-  { overwrite = false } = {},
-): Promise<Link> {
+export interface SaveRequest {
+  site: Site;
+  collection: Collection;
+  values: Values;
+  /** File name within the collection (from its slug template), for new entries. */
+  name: string;
+  /** The entry's title, for the commit message. */
+  title: string;
+}
+
+export async function saveEntry(localPath: string, text: string, req: SaveRequest, { overwrite = false } = {}): Promise<Link> {
+  const { site, collection, values } = req;
+  const { body } = collection.fields.some((f) => f.name === collection.identifier) ? splitTitle(text) : { body: text };
+
   // Local images would land in the repo as links to files that aren't there, which
   // can fail the site's build. Until Joyce uploads images, don't send them.
-  const localImages = [...splitTitle(text).body.matchAll(/!\[[^\]]*\]\(\s*<?(?!https?:|data:)([^)\s>]+)/g)];
+  const localImages = [...body.matchAll(/!\[[^\]]*\]\(\s*<?(?!https?:|data:)([^)\s>]+)/g)];
   if (localImages.length) {
     throw new Error(
-      `This post has ${localImages.length === 1 ? "a pasted image" : `${localImages.length} pasted images`}, ` +
+      `This has ${localImages.length === 1 ? "a pasted image" : `${localImages.length} pasted images`}, ` +
         "which Joyce can't upload to GitHub yet. Remove them, or use images hosted online, to save it.",
     );
   }
 
   const stored = getLink(localPath);
-  // A link to a different repo or branch (the target was changed) doesn't apply here.
-  const link = stored?.repo === target.repo && stored.branch === target.branch ? stored : undefined;
-  const path = link?.path ?? `${target.folder.replace(/\/$/, "")}/${fields.slug}.${target.extension}`;
-  const remote = await getFile(target, path);
+  // A link to another site, collection or branch doesn't apply here.
+  const link =
+    stored && stored.site === site.id && stored.collection === collection.name && stored.branch === site.branch ? stored : undefined;
+  const path = link?.path ?? entryPath(collection, req.name);
+  const remote = await getFile(site.repo, site.branch, path);
+  const missing = unfillable(collection, remote ? parseEntry(remote.content).data : undefined);
+  if (missing.length) {
+    throw new Error(
+      `${collection.label} entries need ${missing.map((f) => f.label).join(", ")}, which Joyce can't set. ` +
+        "Create the entry in the CMS first, then Joyce can update its text.",
+    );
+  }
+  const content = buildEntry(collection, values, body, remote?.content);
 
-  const content = buildPostFile(fields, text, target, remote?.content);
+  const base: Link = { site: site.id, collection: collection.name, values, repo: site.repo, branch: site.branch, path };
   // Nothing to commit, and nothing to conflict with.
   if (remote && content === remote.content) {
-    const unchanged = { ...link, fields, repo: target.repo, branch: target.branch, path, sha: remote.sha, savedAt: Date.now() };
+    const unchanged = { ...link, ...base, sha: remote.sha, savedAt: Date.now() };
     setLink(localPath, unchanged);
     return unchanged;
   }
 
   if (remote && !overwrite) {
     if (!link?.sha) {
-      throw new SaveConflict("exists", `A post named “${fields.slug}” already exists. Change the file name, or overwrite that post.`);
+      throw new SaveConflict("exists", `An entry named “${path.split("/").pop()}” already exists. Change the file name, or overwrite it.`);
     }
     if (remote.sha !== link.sha) {
-      throw new SaveConflict("changed", "This post was changed on GitHub (maybe in the CMS) since Joyce last saved it.");
+      throw new SaveConflict("changed", "This entry was changed on GitHub (maybe in the CMS) since Joyce last saved it.");
     }
   }
 
-  const verb = fields.draft ? "draft" : "post";
-  const res = await api("PUT", contentsPath(target, path), {
-    message: `${remote ? "Update" : "Create"} ${verb} “${fields.title}” (from Joyce)`,
+  const draft = values.draft === true ? " draft" : "";
+  const res = await api("PUT", contentsPath(site.repo, path), {
+    message: `${remote ? "Update" : "Create"} ${collection.labelSingular.toLowerCase()}${draft} “${req.title}” (from Joyce)`,
     content: toBase64(content),
-    branch: target.branch,
+    branch: site.branch,
     ...(remote ? { sha: remote.sha } : {}),
   });
   if (res.status === 409 || res.status === 422) {
-    throw new SaveConflict("changed", "The post changed on GitHub while saving. Try again.");
+    throw new SaveConflict("changed", "The entry changed on GitHub while saving. Try again.");
   }
   if (res.status !== 200 && res.status !== 201) throw apiError(res, "Saving to GitHub");
 
-  const saved: Link = {
-    fields,
-    repo: target.repo,
-    branch: target.branch,
-    path,
-    sha: res.body.content.sha,
-    savedAt: Date.now(),
-    commitUrl: res.body.commit.html_url,
-  };
+  const saved: Link = { ...base, sha: res.body.content.sha, savedAt: Date.now(), commitUrl: res.body.commit.html_url };
   setLink(localPath, saved);
   return saved;
+}
+
+/** The entry's current front matter on GitHub, for editing an entry saved before. */
+export async function remoteEntry(link: Link, site: Site) {
+  if (!link.path) return null;
+  const file = await getFile(site.repo, site.branch, link.path);
+  return file ? parseEntry(file.content) : null;
 }
 
 export const fileUrl = (link: Link) => `https://github.com/${link.repo}/blob/${link.branch}/${link.path}`;

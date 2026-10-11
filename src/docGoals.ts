@@ -1,5 +1,4 @@
-import { useSyncExternalStore } from "react";
-import { isWithin } from "./fs";
+import { FolderStore, dropKeys, rekey, toRel, useStore } from "./folderState";
 
 /** A length goal for one document, e.g. "at most 800 words" for a column with a limit. */
 export interface DocGoal {
@@ -11,43 +10,52 @@ export interface DocGoal {
 /** "About" counts as met within this fraction of the target either way. */
 export const ABOUT_TOLERANCE = 0.1;
 
-const KEY = "joyce:doc-goals";
+// Kept in the writing folder (see folderState.ts), keyed by path relative to it.
+const LEGACY_KEY = "joyce:doc-goals";
 
-function load(): Record<string, DocGoal> {
-  try {
-    return JSON.parse(localStorage.getItem(KEY) ?? "{}");
-  } catch {
-    return {};
-  }
-}
+const store = new FolderStore<Record<string, DocGoal>>({
+  file: "doc-goals.json",
+  fallback: {},
+  parse: (raw) => (raw && typeof raw === "object" ? (raw as Record<string, DocGoal>) : {}),
+  // Earlier versions kept goals per computer, keyed by absolute path.
+  legacy: () => {
+    try {
+      const old = JSON.parse(localStorage.getItem(LEGACY_KEY) ?? "{}") as Record<string, DocGoal>;
+      const moved = Object.entries(old).flatMap(([abs, g]) => {
+        const rel = toRel(abs);
+        return rel ? [[rel, g] as const] : [];
+      });
+      return moved.length ? Object.fromEntries(moved) : null;
+    } catch {
+      return null;
+    }
+  },
+});
 
-let goals = load();
-const listeners = new Set<() => void>();
-const subscribe = (l: () => void) => (listeners.add(l), () => void listeners.delete(l));
-
-function save(next: Record<string, DocGoal>) {
-  goals = next;
-  localStorage.setItem(KEY, JSON.stringify(goals));
-  listeners.forEach((l) => l());
-}
-
-export const useDocGoal = (path: string | null) =>
-  useSyncExternalStore(subscribe, () => (path ? goals[path] : undefined));
+export const useDocGoal = (path: string | null) => {
+  const all = useStore(store);
+  const rel = path && toRel(path);
+  return rel ? all[rel] : undefined;
+};
 
 export function setDocGoal(path: string, goal: DocGoal | null) {
-  const next = { ...goals };
-  if (goal) next[path] = goal;
-  else delete next[path];
-  save(next);
+  const rel = toRel(path);
+  if (!rel) return;
+  const next = { ...store.get() };
+  if (goal) next[rel] = goal;
+  else delete next[rel];
+  store.set(next);
 }
 
 /** Keeps goals attached when a document, or a folder of documents, is renamed or moved. */
 export function moveDocGoals(from: string, to: string) {
-  save(Object.fromEntries(Object.entries(goals).map(([p, g]) => [isWithin(p, from) ? to + p.slice(from.length) : p, g])));
+  const [a, b] = [toRel(from), toRel(to)];
+  if (a && b) store.set(rekey(store.get(), a, b));
 }
 
 export function forgetDocGoals(path: string) {
-  save(Object.fromEntries(Object.entries(goals).filter(([p]) => !isWithin(p, path))));
+  const rel = toRel(path);
+  if (rel) store.set(dropKeys(store.get(), rel));
 }
 
 export type GoalState = "under" | "met" | "over";

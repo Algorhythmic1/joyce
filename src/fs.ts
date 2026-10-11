@@ -37,6 +37,8 @@ export interface Storage {
   imageUrl(path: string): string;
   /** Lets images inside `dir` be displayed. */
   allowImages(dir: string): Promise<void>;
+  /** Names of files directly in `dir` (empty if it doesn't exist). */
+  listFiles(dir: string): Promise<string[]>;
 }
 
 /** Pasted images are kept in this folder beside their document. */
@@ -62,7 +64,8 @@ export const displayName = (name: string) => name.replace(/\.(md|markdown|txt)$/
 const tauriStorage: Storage = {
   async pickFolder() {
     const picked = await open({ directory: true, multiple: false, title: "Choose a folder for your writing" });
-    return typeof picked === "string" ? picked : null;
+    // Paths use `/` throughout the UI, Windows included.
+    return typeof picked === "string" ? picked.replace(/\\/g, "/") : null;
   },
   listTree: (root) => invoke("list_tree", { root }),
   read: (path) => invoke("read_file", { path }),
@@ -74,6 +77,7 @@ const tauriStorage: Storage = {
   writeImage: (path, base64) => invoke("write_image", { path, base64 }),
   imageUrl: (path) => convertFileSrc(path),
   allowImages: (dir) => invoke("allow_images_from", { dir }),
+  listFiles: (dir) => invoke("list_files", { dir }),
 };
 
 // In a plain browser (e.g. `npm run dev`) we fake a folder in localStorage so the
@@ -160,6 +164,7 @@ const demoStorage: Storage = (() => {
     },
     imageUrl: (path) => images.get(path) ?? "",
     allowImages: async () => {},
+    listFiles: async (dir) => Object.keys(state.files).filter((f) => dirname(f) === dir).map(basename),
     trash: async (path) => {
       const inside = (p: string) => p === path || p.startsWith(path + "/");
       state = {
