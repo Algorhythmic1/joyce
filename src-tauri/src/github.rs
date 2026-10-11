@@ -160,18 +160,30 @@ pub struct ApiResponse {
     body: Value,
 }
 
-/// Authenticated call to api.github.com. Only reads and content writes (PUT) are
-/// allowed, and only against the API host.
+/// Whether `path` is `/repos/{owner}/{name}/git/{rest}` with `rest` passing `ok`.
+fn git_data_path(path: &str, ok: impl Fn(&[&str]) -> bool) -> bool {
+    let parts: Vec<&str> = path.split('/').collect();
+    parts.len() >= 6 && parts[0].is_empty() && parts[1] == "repos" && parts[4] == "git" && ok(&parts[5..])
+}
+
+/// Authenticated call to api.github.com, only against the API host. Allowed:
+/// reads, content writes (PUT), and what one commit of several files needs:
+/// creating blobs, trees and commits, and moving a branch forward to it.
 #[tauri::command]
 pub async fn github_api(method: String, path: String, body: Option<Value>) -> Result<ApiResponse, String> {
-    let method = match method.as_str() {
-        "GET" => reqwest::Method::GET,
-        "PUT" => reqwest::Method::PUT,
-        _ => return Err(format!("Method {method} is not allowed")),
-    };
-    if !path.starts_with('/') || path.contains("://") || path.contains("..") {
+    if !path.starts_with('/') || path.contains("://") || path.contains("..") || (path.contains('?') && method != "GET") {
         return Err("Invalid API path".into());
     }
+    let allowed = match method.as_str() {
+        "GET" | "PUT" => true,
+        "POST" => git_data_path(&path, |r| r.len() == 1 && ["blobs", "trees", "commits"].contains(&r[0])),
+        "PATCH" => git_data_path(&path, |r| r.len() >= 3 && r[0] == "refs" && r[1] == "heads"),
+        _ => false,
+    };
+    if !allowed {
+        return Err(format!("{method} {path} is not allowed"));
+    }
+    let method = reqwest::Method::from_bytes(method.as_bytes()).map_err(err)?;
     let token = token()?.ok_or("Not signed in to GitHub.")?;
     let mut req = client()?
         .request(method, format!("{API}{path}"))
@@ -195,9 +207,19 @@ mod tests {
     #[test]
     fn rejects_unsafe_requests() {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        for (m, p) in [("DELETE", "/user"), ("GET", "https://evil.example/x"), ("GET", "/repos/../x")] {
+        for (m, p) in [
+            ("DELETE", "/user"),
+            ("GET", "https://evil.example/x"),
+            ("GET", "/repos/../x"),
+            ("POST", "/user/repos"),
+            ("POST", "/repos/o/r/git/refs"),
+            ("PATCH", "/repos/o/r/git/refs/tags/v1"),
+            ("PATCH", "/repos/o/r"),
+        ] {
             assert!(rt.block_on(github_api(m.into(), p.into(), None)).is_err(), "{m} {p}");
         }
+        assert!(git_data_path("/repos/o/r/git/blobs", |r| r == ["blobs"]));
+        assert!(git_data_path("/repos/o/r/git/refs/heads/main", |r| r[0] == "refs"));
     }
 
     #[test]

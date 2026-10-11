@@ -2,12 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { basename } from "../fs";
 import { COLORS, SYMBOLS, colorVar, type ColorId, type SymbolId } from "../sectionIcons";
 import { canvasSession } from "../canvas/sessions";
-import { cardBounds, connect, curve, deleteCards, endpoint, MIN_CARD, newCard, screenToWorld, SIDES, viewportBounds, worldToScreen, zoomAt,
+import { cardBounds, connect, curve, deleteCards, endpoint, MIN_CARD, newCard, newWebsiteCard, screenToWorld, SIDES, viewportBounds, worldToScreen, zoomAt,
   type Board, type Camera, type Card, type Point, type Side } from "../canvas/model";
 import { CanvasGrid } from "./CanvasGrid";
 import { CanvasMinimap } from "./CanvasMinimap";
 import { CanvasConnections } from "./CanvasConnections";
 import { SectionIconView } from "./IconPicker";
+import { WebsiteCard } from "./WebsiteCard";
+import { websiteUrl } from "../canvas/websites";
+import { openWebsite } from "../canvas/websitePreview";
 import "../canvas/canvas.css";
 
 type Gesture = { id: number; start: Point; camera: Camera; moved: boolean; before: Board; kind: "pan" | "move" | "resize" | "connect";
@@ -50,6 +53,8 @@ export default function CanvasWorkspace({ root, maximized, onToggleMaximized, on
   const [recoveries, setRecoveries] = useState(false);
   const [recovery, setRecovery] = useState<Recovery | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [websiteEditor, setWebsiteEditor] = useState<{ id?: string; title: string; url: string; error?: string } | null>(null);
+  const [previewRevision, setPreviewRevision] = useState<Record<string, number>>({});
   const textArea = useRef<HTMLTextAreaElement>(null);
   const cameraReady = useRef(false);
   const cameraFrame = useRef(0);
@@ -128,6 +133,10 @@ export default function CanvasWorkspace({ root, maximized, onToggleMaximized, on
   }, [finishEditing]);
   const isPanning = useCallback(() => spaceRef.current, []);
   const beginEditing = (card: Card) => {
+    if (card.kind === "website") {
+      finishEditing(); setAppearance(false); setSelected(new Set([card.id]));
+      setWebsiteEditor({ id: card.id, title: card.title, url: card.url! }); return;
+    }
     if (editing === card.id) { textArea.current?.focus(); return; }
     finishEditing();
     editingBefore.current = session.get().board;
@@ -148,6 +157,23 @@ export default function CanvasWorkspace({ root, maximized, onToggleMaximized, on
     const card = newCard({ x: center.x - 140, y: center.y - 80 });
     session.change({ ...current, cards: [...current.cards, card] });
     beginEditing(card);
+  };
+  const openBookmark = (card: Card) => { void openWebsite(card.url!).catch(e => setNotice(`Couldn’t open website: ${String(e)}`)); };
+  const saveWebsite = () => {
+    const current = session.get().board;
+    if (!websiteEditor || !current) return;
+    try {
+      const url = websiteUrl(websiteEditor.url), title = websiteEditor.title.trim();
+      if (websiteEditor.id) {
+        patchCard(websiteEditor.id, { url, title });
+      } else {
+        const center = screenToWorld({ x: size.width / 2, y: size.height / 2 }, cameraRef.current);
+        const card = newWebsiteCard({ x: center.x - 140, y: center.y - 80 }, url, title);
+        session.change({ ...current, cards: [...current.cards, card] });
+        setSelected(new Set([card.id])); setHovered(card.id);
+      }
+      setWebsiteEditor(null); host.current?.focus({ preventScroll: true });
+    } catch (e) { setWebsiteEditor({ ...websiteEditor, error: e instanceof Error ? e.message : String(e) }); }
   };
   const removeSelection = () => {
     finishEditing();
@@ -357,12 +383,13 @@ export default function CanvasWorkspace({ root, maximized, onToggleMaximized, on
       const card = id ? cardsById.get(id) : undefined;
       e.preventDefault();
       e.stopPropagation();
-      if (card) beginEditing(card);
+      if (card?.kind === "website") openBookmark(card);
+      else if (card) beginEditing(card);
       else addCard(screenToWorld(pointerPoint(e), cameraRef.current));
     }}
     onKeyDown={e => {
       if (e.key === "Escape") {
-        e.stopPropagation(); cancelGesture(); finishEditing(); setAppearance(false); setHelp(false); setRecoveries(false); setRecovery(null); setConnecting(null); host.current?.focus(); return;
+        e.stopPropagation(); cancelGesture(); finishEditing(); setWebsiteEditor(null); setAppearance(false); setHelp(false); setRecoveries(false); setRecovery(null); setConnecting(null); host.current?.focus(); return;
       }
       if (gesture.current) { e.preventDefault(); return; }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "n") { e.preventDefault(); e.stopPropagation(); addCard(); return; }
@@ -374,7 +401,7 @@ export default function CanvasWorkspace({ root, maximized, onToggleMaximized, on
       else if ((e.key === "Delete" || e.key === "Backspace") && !(e.target as Element).closest("button")) { e.preventDefault(); removeSelection(); }
       else if (e.key === "Enter" && connecting && selected.size === 1 && !(e.target as Element).closest("button")) { e.preventDefault(); finishConnection([...selected][0]); }
       else if (e.key === "Enter" && selected.size === 1 && !(e.target as Element).closest("button")) {
-        const card = board?.cards.find(c => selected.has(c.id)); if (card) { e.preventDefault(); beginEditing(card); }
+        const card = board?.cards.find(c => selected.has(c.id)); if (card) { e.preventDefault(); if (card.kind === "website") openBookmark(card); else beginEditing(card); }
       } else if (!mod && !(e.target as Element).closest("button") && e.key.toLowerCase() === "n") { e.preventDefault(); addCard(); }
       else if (!mod && !(e.target as Element).closest("button") && e.key.toLowerCase() === "c" && selected.size === 1) setConnecting({ card: [...selected][0], side: "right" });
       else if (!mod && !(e.target as Element).closest("button") && e.key.toLowerCase() === "f") fit();
@@ -391,6 +418,9 @@ export default function CanvasWorkspace({ root, maximized, onToggleMaximized, on
       <div className="canvas-heading-title"><span className="canvas-eyebrow">SPACE TO THINK</span><h1>Canvas <span>/ {basename(root)}</span></h1></div>
       <div className="canvas-heading-actions">
         <button className="canvas-add" aria-label="Add card" title="Add card" disabled={!board} onClick={() => addCard()}><span aria-hidden="true">＋</span><span className="canvas-add-label">Add card</span></button>
+        <button className="canvas-layout-button" aria-label="Add website" title="Add website bookmark" disabled={!board} onClick={() => { finishEditing(); setWebsiteEditor({ title: "", url: "" }); }}>
+          <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7"/><ellipse cx="10" cy="10" rx="3" ry="7"/><path d="M3 10h14"/></svg>
+        </button>
         <button className="canvas-layout-button" aria-label={maximized ? "Return canvas to sidebar" : "Maximize canvas"}
           title={maximized ? "Return to sidebar" : "Maximize canvas"} aria-pressed={maximized} onClick={onToggleMaximized}>
           <svg viewBox="0 0 20 20" aria-hidden="true">{maximized
@@ -417,8 +447,9 @@ export default function CanvasWorkspace({ root, maximized, onToggleMaximized, on
         {board.cards.filter(c => editing === c.id || selected.size === 1 && selected.has(c.id) || hovered === c.id || gesture.current?.kind === "move" && gesture.current.ids?.has(c.id) ||
           c.x + c.width >= viewport.x - 360 / camera.zoom && c.x <= viewport.x + viewport.width + 360 / camera.zoom &&
           c.y + c.height >= viewport.y - 360 / camera.zoom && c.y <= viewport.y + viewport.height + 360 / camera.zoom).map(card => <article
-          key={card.id} data-card-id={card.id} tabIndex={0} aria-label={card.title || card.body.slice(0, 60) || "Empty idea card"}
-          className={`canvas-card${selected.has(card.id) ? " selected" : ""}${editing === card.id ? " editing" : ""}${connecting?.target === card.id && connecting.card !== card.id ? " connect-target" : ""}`}
+          key={card.id} data-card-id={card.id} tabIndex={0} role={card.kind === "website" ? "link" : undefined}
+          aria-label={card.kind === "website" ? `Open website: ${card.title || card.url}` : card.title || card.body.slice(0, 60) || "Empty idea card"}
+          className={`canvas-card${card.kind === "website" ? " canvas-website-card" : ""}${selected.has(card.id) ? " selected" : ""}${editing === card.id ? " editing" : ""}${connecting?.target === card.id && connecting.card !== card.id ? " connect-target" : ""}`}
           style={{ left: card.x, top: card.y, width: card.width, height: card.height, fontSize: card.textSize,
             "--card-color": card.icon ? colorVar(card.icon.color) : "var(--accent)", zIndex: selected.has(card.id) ? 2 : 1 } as React.CSSProperties}
           onPointerEnter={() => holdHover(card.id)} onPointerLeave={leaveHover}
@@ -430,7 +461,7 @@ export default function CanvasWorkspace({ root, maximized, onToggleMaximized, on
             beginGesture(e, "move", card);
           }}>
           {card.icon && <div className="canvas-card-symbol"><SectionIconView icon={card.icon} size={18} /></div>}
-          {editing === card.id ? <div className="canvas-card-editor" onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) finishEditing(); }}>
+          {card.kind === "website" ? <WebsiteCard card={card} revision={previewRevision[card.id] ?? 0}/> : editing === card.id ? <div className="canvas-card-editor" onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) finishEditing(); }}>
             <input aria-label="Card title" placeholder="Title (optional)" value={card.title} onChange={e => patchCard(card.id, { title: e.target.value }, false)} />
             <textarea ref={textArea} aria-label="Card idea" placeholder="Write a thought…" value={card.body} spellCheck onChange={e => patchCard(card.id, { body: e.target.value }, false)} />
           </div> : <div className="canvas-card-copy">{card.title && <h2>{card.title}</h2>}<p>{card.body || (!card.title ? <span className="canvas-card-placeholder">A thought begins here…</span> : "")}</p></div>}
@@ -446,12 +477,12 @@ export default function CanvasWorkspace({ root, maximized, onToggleMaximized, on
       {active && toolbarPosition && !busy && <div className="canvas-card-toolbar canvas-hud" style={toolbarPosition} role="toolbar" aria-label="Card actions"
         onPointerEnter={() => holdHover(active.id)} onPointerLeave={leaveHover} onPointerDown={e => e.stopPropagation()}>
         <button aria-label="Move card" title="Drag to move" className="canvas-move-handle" onPointerDown={e => beginGesture(e, "move", active)}><MoveGlyph/></button>
-        <button aria-label="Edit card" title="Edit card" onClick={() => beginEditing(active)}><EditGlyph/></button>
+        <button aria-label={active.kind === "website" ? "Edit website URL" : "Edit card"} title={active.kind === "website" ? "Edit website URL & title" : "Edit card"} onClick={() => beginEditing(active)}><EditGlyph/></button>
         <button aria-label="Card appearance" title="Icon & color" aria-expanded={appearance} onClick={() => { setSelected(new Set([active.id])); setAppearance(!appearance); }}>
           {active.icon ? <SectionIconView icon={active.icon} size={17}/> : <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2s-5 6-5 10a5 5 0 0 0 10 0c0-4-5-10-5-10z"/></svg>}
         </button>
         <span className="canvas-tool-divider"/>
-        {([14, 17, 21] as const).map((s, i) => <button key={s} aria-label={`${["Small", "Medium", "Large"][i]} card text`} aria-pressed={active.textSize === s} title={`${["Small", "Medium", "Large"][i]} text`}
+        {active.kind === "website" ? <button aria-label="Refresh website preview" title="Refresh website preview" onClick={() => setPreviewRevision(prev => ({ ...prev, [active.id]: (prev[active.id] ?? 0) + 1 }))}>↻</button> : ([14, 17, 21] as const).map((s, i) => <button key={s} aria-label={`${["Small", "Medium", "Large"][i]} card text`} aria-pressed={active.textSize === s} title={`${["Small", "Medium", "Large"][i]} text`}
           style={{ fontSize: 12 + i * 3 }} onClick={() => patchCard(active.id, { textSize: s })}>A</button>)}
         <span className="canvas-tool-divider"/>
         <button aria-label="Duplicate card" title="Duplicate card" onClick={() => duplicate(active)}><CopyGlyph/></button>
@@ -464,10 +495,10 @@ export default function CanvasWorkspace({ root, maximized, onToggleMaximized, on
           onClick={() => patchCard(active.id, { icon: { symbol, color: active.icon?.color ?? "aqua" } })}><SectionIconView icon={{ symbol, color: active.icon?.color ?? "aqua" }} size={17}/></button>)}</div>
         <div className="color-row">{(Object.keys(COLORS) as ColorId[]).map(color => <button key={color} className="swatch" aria-label={`${COLORS[color]} card`} aria-pressed={active.icon?.color === color}
           style={{ background: colorVar(color) }} onClick={() => patchCard(active.id, { icon: { symbol: active.icon?.symbol ?? "bulb", color } })}/>)}</div>
-        <div className="canvas-appearance-footer"><button onClick={() => patchCard(active.id, { icon: undefined })}>Remove icon</button><button onClick={() => {
+        <div className="canvas-appearance-footer"><button onClick={() => patchCard(active.id, { icon: undefined })}>Remove icon</button>{active.kind !== "website" && <button onClick={() => {
           const text = host.current?.querySelector<HTMLElement>(`[data-card-id="${CSS.escape(active.id)}"] .canvas-card-copy`);
           patchCard(active.id, { height: Math.max(MIN_CARD.height, (text?.scrollHeight ?? active.height - 48) + (active.icon ? 82 : 48)) });
-        }}>Fit to content</button></div>
+        }}>Fit to content</button>}</div>
       </div>}
       {selectedEdge && <div className="canvas-hud canvas-edge-toolbar" role="toolbar" aria-label="Connection actions">
         <span>Connection</span><button aria-pressed={selectedEdge.arrow} onClick={() => session.change({ ...board, connections: board.connections.map(e => e.id === selectedEdge.id ? { ...e, arrow: !e.arrow } : e) })}>Arrow {selectedEdge.arrow ? "on" : "off"}</button>
@@ -491,14 +522,26 @@ export default function CanvasWorkspace({ root, maximized, onToggleMaximized, on
     </div>
     {snapshot.error && <div className="canvas-hud canvas-error" role="alert"><span>{snapshot.error}</span><button onClick={() => { void session.retry().catch(() => {}); }}>Retry</button></div>}
     {notice && <div className="canvas-hud canvas-error" role="alert">{notice}<button onClick={() => setNotice(null)}>Dismiss</button></div>}
+    {websiteEditor && <div className="canvas-popover canvas-website-editor" role="dialog" aria-modal="false" aria-label={websiteEditor.id ? "Edit website bookmark" : "Add website bookmark"}
+      onPointerDown={e => e.stopPropagation()} onKeyDown={e => { if (e.key !== "Escape") e.stopPropagation(); }}>
+      <form onSubmit={e => { e.preventDefault(); saveWebsite(); }}>
+        <div className="canvas-popover-heading"><span>{websiteEditor.id ? "Edit website" : "Add website"}</span><button type="button" aria-label="Close website editor" onClick={() => setWebsiteEditor(null)}>×</button></div>
+        <label>Website address<input autoFocus aria-label="Website address" placeholder="https://example.com" value={websiteEditor.url} aria-invalid={!!websiteEditor.error}
+          onChange={e => setWebsiteEditor({ ...websiteEditor, url: e.target.value, error: undefined })}/></label>
+        <label>Title (optional)<input aria-label="Website title" placeholder="A name for this bookmark" value={websiteEditor.title} onChange={e => setWebsiteEditor({ ...websiteEditor, title: e.target.value })}/></label>
+        <p>A mobile preview in a card. Double-click to open the site in your browser.</p>
+        {websiteEditor.error && <p className="canvas-website-validation" role="alert">{websiteEditor.error}</p>}
+        <div className="canvas-website-editor-actions"><button type="button" onClick={() => setWebsiteEditor(null)}>Cancel</button><button className="canvas-add" type="submit">{websiteEditor.id ? "Save website" : "Add website"}</button></div>
+      </form>
+    </div>}
     {help && <div className="canvas-popover canvas-help"><div className="canvas-popover-heading"><span>A few ways to find your flow</span><button aria-label="Close shortcuts" onClick={() => setHelp(false)}>×</button></div>
-      <dl><dt>New card</dt><dd>Double-click · N</dd><dt>Move around</dt><dd>Drag background · Space-drag</dd><dt>Zoom</dt><dd>Pinch · ⌘ / Ctrl + scroll</dd><dt>Edit a card</dt><dd>Double-click · Enter</dd><dt>Select several</dt><dd>Shift-click</dd><dt>Connect</dt><dd>Drag a side dot · C, select a card, Enter</dd><dt>Resize</dt><dd>Drag corner dots · focus them + arrows</dd><dt>Fit cards</dt><dd>F</dd><dt>Move selection</dt><dd>Arrows · Shift for larger steps</dd><dt>Undo / redo</dt><dd>⌘ / Ctrl Z · Shift Z</dd><dt>Finish / cancel</dt><dd>Escape</dd></dl></div>}
+      <dl><dt>New card</dt><dd>Double-click · N</dd><dt>Move around</dt><dd>Drag background · Space-drag</dd><dt>Zoom</dt><dd>Pinch · ⌘ / Ctrl + scroll</dd><dt>Edit a card</dt><dd>Double-click · Enter</dd><dt>Open website</dt><dd>Double-click · Enter</dd><dt>Edit website URL</dt><dd>Hover card → edit</dd><dt>Select several</dt><dd>Shift-click</dd><dt>Connect</dt><dd>Drag a side dot · C, select a card, Enter</dd><dt>Resize</dt><dd>Drag corner dots · focus them + arrows</dd><dt>Fit cards</dt><dd>F</dd><dt>Move selection</dt><dd>Arrows · Shift for larger steps</dd><dt>Undo / redo</dt><dd>⌘ / Ctrl Z · Shift Z</dd><dt>Finish / cancel</dt><dd>Escape</dd></dl></div>}
     {recoveries && <div className="canvas-popover canvas-recoveries"><div className="canvas-popover-heading"><span>Recovered versions</span><button aria-label="Close recovered versions" onClick={() => { setRecoveries(false); setRecovery(null); }}>×</button></div>
       <p>Conflicting ideas are kept here. Preview a version before restoring it; your current board is backed up automatically.</p>
       {!snapshot.recovered.length && <p>No recovered versions found.</p>}
       {snapshot.recovered.map(name => <button className="canvas-recovery-item" key={name} onClick={() => { finishEditing(); void session.readRecovery(name).then(b => setRecovery({ name, board: b })).catch(e => setNotice(String(e))); }} aria-pressed={recovery?.name === name}>{name.replace(/^canvas \(|\)\.json$/g, "")}</button>)}
       {recovery && <div className="canvas-recovery-preview"><strong>{recovery.board.cards.length} cards · {recovery.board.connections.length} connections</strong>
-        <div>{recovery.board.cards.map(c => <article key={c.id}><strong>{c.title}</strong><p>{c.body || "Empty card"}</p></article>)}</div>
+        <div>{recovery.board.cards.map(c => <article key={c.id}><strong>{c.title}</strong><p>{c.kind === "website" ? c.url : c.body || "Empty card"}</p></article>)}</div>
         <button className="canvas-add" onClick={() => { void session.restore(recovery.name).then(() => { setRecovery(null); setRecoveries(false); setSelected(new Set()); setHovered(null); fit(); }).catch(e => setNotice(String(e))); }}>Restore this version</button>
       </div>}
     </div>}

@@ -11,7 +11,7 @@ import {
 } from "./projects";
 import { Toolbar, type Panel } from "./components/Toolbar";
 import { PublishPanel } from "./components/PublishPanel";
-import { forgetLinks, moveLinks } from "./integrations/github";
+import { forgetLinks, linkedImageRefs, moveLinks, retargetLocalImage } from "./integrations/github";
 import { DocGoalPanel } from "./components/DocGoalPanel";
 import { countChars, forgetDocGoals, goalState, moveDocGoals, useDocGoal } from "./docGoals";
 import { SettingsPanel } from "./components/SettingsPanel";
@@ -276,8 +276,9 @@ export default function App() {
   };
 
   /**
-   * A document's pasted images live in the assets folder beside it, so when the
-   * document changes folders its images go with it and the links keep working.
+   * A document's images live in the assets folder beside it — pasted into the
+   * text, or chosen as a hero — so when the document changes folders they go
+   * with it and the links keep working.
    */
   const carryImages = async (from: string, to: string) => {
     const fromDir = dirname(from);
@@ -285,15 +286,24 @@ export default function App() {
     if (fromDir === toDir) return;
     const text = await storage.read(to);
     let updated = text;
-    for (const ref of new Set([...text.matchAll(IMAGE_REF)].map((m) => m[1]))) {
-      const name = safeDecode(ref.slice(ASSETS_DIR.length + 1));
+    // Decoded path → how the Markdown writes it, if it does. A hero may be the only reference.
+    const refs = new Map<string, string>();
+    for (const raw of text.matchAll(IMAGE_REF)) refs.set(safeDecode(raw[1]), raw[1]);
+    for (const local of linkedImageRefs(to)) {
+      if (local.startsWith(`${ASSETS_DIR}/`) && !refs.has(local)) refs.set(local, local);
+    }
+    for (const [decoded, raw] of refs) {
+      const name = decoded.slice(ASSETS_DIR.length + 1);
       const src = join(join(fromDir, ASSETS_DIR), name);
-      // On a name clash in the destination, number the copy and update the link.
+      // On a name clash in the destination, number the copy and update what points at it.
       for (let i = 1; i <= 50; i++) {
         const destName = i === 1 ? name : name.replace(/(\.[^.]+)?$/, `-${i}$1`);
         try {
           await storage.rename(src, join(join(toDir, ASSETS_DIR), destName));
-          if (destName !== name) updated = updated.split(`(${ref})`).join(`(${ASSETS_DIR}/${encodeURI(destName)})`);
+          if (destName !== name) {
+            updated = updated.split(`(${raw})`).join(`(${ASSETS_DIR}/${encodeURI(destName)})`);
+            retargetLocalImage(to, `${ASSETS_DIR}/${name}`, `${ASSETS_DIR}/${destName}`);
+          }
           break;
         } catch (e) {
           // Anything but a clash (usually: the image is already gone) means leave it be.

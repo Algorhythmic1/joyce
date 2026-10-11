@@ -1,8 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
-import { isTauri, slugify } from "../fs";
+import { basename, dirname, isTauri, slugify, storage } from "../fs";
 import { FolderStore, dropKeys, rekey, toRel } from "../folderState";
 import {
-  buildEntry, entryPath, looksLikeCmsConfig, parseConfig, parseEntry, unfillable, type Collection, type SiteConfig, type Values,
+  assignImageName, buildEntry, entryPath, isLocalImage, localImageChoices, looksLikeCmsConfig, mediaLocation, normalizePath,
+  parseConfig, parseEntry, siteImageName, unfillable,
+  type Collection, type SiteConfig, type Values,
 } from "./sveltia";
 
 /*
@@ -161,6 +163,50 @@ export function splitTitle(text: string): { title: string | null; body: string }
   return { title: m[1].trim(), body: text.slice(m[0].length).replace(/^\s*\n/, "") };
 }
 
+/** Markdown images: alt text, then the link (bare or in <angle brackets>), then an optional title. */
+const IMAGE = /(!\[[^\]]*\]\(\s*)(<[^>]*>|[^)\s]+)((?:\s+(?:"[^"]*"|'[^']*'))?\s*\))/g;
+
+/**
+ * Images the document links to on this computer (pasted ones, in its assets
+ * folder), as written in the Markdown. Web addresses and site paths ("/uploads/…")
+ * aren't local; nor are links already pointing into the site's media folder.
+ */
+export function localImages(body: string, sitePrefix = ""): string[] {
+  const refs = [...body.matchAll(IMAGE)].map((m) => m[2]);
+  return [
+    ...new Set(
+      refs.filter((ref) => {
+        const target = ref.replace(/^<|>$/g, "");
+        return !/^([a-z][a-z0-9+.-]*:|\/|#)/i.test(target) && !(sitePrefix && target.startsWith(sitePrefix));
+      }),
+    ),
+  ];
+}
+
+const decodeRef = (ref: string) => {
+  const target = ref.replace(/^<|>$/g, "");
+  try {
+    return decodeURI(target);
+  } catch {
+    return target;
+  }
+};
+
+/** Absolute path of an image linked from a document, or null if the link climbs out of the drive. */
+export function resolveDocImage(docPath: string, ref: string): string | null {
+  const docDir = dirname(docPath);
+  const root = docDir.match(/^(?:[A-Za-z]:)?\//)?.[0] ?? "";
+  const file = normalizePath(`${docDir.slice(root.length)}/${decodeRef(ref)}`);
+  return file === null ? null : root + file;
+}
+
+/** How many images a save would upload: pasted ones, plus image fields the user has chosen. */
+export function imagesToUpload(body: string, collection: Collection, values: Values, sitePrefix = ""): number {
+  const keys = new Set(localImages(body, sitePrefix).map(decodeRef));
+  for (const choice of localImageChoices(collection, values)) keys.add(choice.local);
+  return keys.size;
+}
+
 // --- GitHub API -----------------------------------------------------------------
 
 interface ApiResponse {
@@ -168,7 +214,7 @@ interface ApiResponse {
   body: any;
 }
 
-const api = (method: "GET" | "PUT", path: string, body?: unknown) =>
+const api = (method: "GET" | "PUT" | "POST" | "PATCH", path: string, body?: unknown) =>
   invoke<ApiResponse>("github_api", { method, path, body: body ?? null });
 
 const apiError = (res: ApiResponse, what: string) =>
@@ -230,11 +276,62 @@ function fromBase64(b64: string) {
   return new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)));
 }
 
-function toBase64(text: string) {
-  const bytes = new TextEncoder().encode(text);
-  let bin = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(bin);
+const fromBase64Bytes = (b64: string) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+
+/** The SHA Git (and GitHub) give a file with these bytes, to tell whether it's already there. */
+async function blobSha(bytes: Uint8Array) {
+  const header = new TextEncoder().encode(`blob ${bytes.length}\0`);
+  const all = new Uint8Array(header.length + bytes.length);
+  all.set(header);
+  all.set(bytes, header.length);
+  const hash = new Uint8Array(await crypto.subtle.digest("SHA-1", all));
+  return [...hash].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Names and SHAs of the files in a repo folder (empty if there's no such folder). */
+async function listFolder(repo: string, branch: string, folder: string): Promise<Map<string, string>> {
+  const res = await api("GET", `${contentsPath(repo, folder)}?ref=${encodeURIComponent(branch)}`);
+  if (res.status === 404) return new Map();
+  if (res.status !== 200) throw apiError(res, "Reading the site's images");
+  const items = Array.isArray(res.body) ? (res.body as { name: string; sha: string; type: string }[]) : [];
+  return new Map(items.filter((i) => i.type === "file").map((i) => [i.name, i.sha]));
+}
+
+/** The branch moved on between reading it and committing; the save can simply be redone. */
+class BranchMoved extends Error {}
+
+type CommitFile = { path: string } & ({ text: string } | { base64: string });
+
+/**
+ * Commits several files at once (an entry and its images), so the site builds
+ * once and never sees the entry without its images.
+ */
+async function commitFiles(repo: string, branch: string, message: string, files: CommitFile[]) {
+  const ref = `/repos/${repo}/git/refs/heads/${branch.split("/").map(encodeURIComponent).join("/")}`;
+  const head = await api("GET", ref.replace("/git/refs/", "/git/ref/"));
+  if (head.status !== 200) throw apiError(head, "Reading the site's branch");
+  const parent: string = head.body.object.sha;
+  const parentCommit = await api("GET", `/repos/${repo}/git/commits/${parent}`);
+  if (parentCommit.status !== 200) throw apiError(parentCommit, "Reading the site's latest commit");
+
+  const tree = [];
+  for (const f of files) {
+    if ("text" in f) {
+      tree.push({ path: f.path, mode: "100644", type: "blob", content: f.text });
+      continue;
+    }
+    const blob = await api("POST", `/repos/${repo}/git/blobs`, { content: f.base64, encoding: "base64" });
+    if (blob.status !== 201) throw apiError(blob, `Uploading ${basename(f.path)}`);
+    tree.push({ path: f.path, mode: "100644", type: "blob", sha: blob.body.sha });
+  }
+  const newTree = await api("POST", `/repos/${repo}/git/trees`, { base_tree: parentCommit.body.tree.sha, tree });
+  if (newTree.status !== 201) throw apiError(newTree, "Saving to GitHub");
+  const commit = await api("POST", `/repos/${repo}/git/commits`, { message, tree: newTree.body.sha, parents: [parent] });
+  if (commit.status !== 201) throw apiError(commit, "Saving to GitHub");
+  const moved = await api("PATCH", ref, { sha: commit.body.sha, force: false });
+  if (moved.status === 422 || moved.status === 409) throw new BranchMoved();
+  if (moved.status !== 200) throw apiError(moved, "Saving to GitHub");
+  return { url: commit.body.html_url as string };
 }
 
 async function getFile(repo: string, branch: string, path: string): Promise<{ sha: string; content: string } | null> {
@@ -356,19 +453,24 @@ export interface SaveRequest {
   title: string;
 }
 
-export async function saveEntry(localPath: string, text: string, req: SaveRequest, { overwrite = false } = {}): Promise<Link> {
-  const { site, collection, values } = req;
-  const { body } = collection.fields.some((f) => f.name === collection.identifier) ? splitTitle(text) : { body: text };
-
-  // Local images would land in the repo as links to files that aren't there, which
-  // can fail the site's build. Until Joyce uploads images, don't send them.
-  const localImages = [...body.matchAll(/!\[[^\]]*\]\(\s*<?(?!https?:|data:)([^)\s>]+)/g)];
-  if (localImages.length) {
-    throw new Error(
-      `This has ${localImages.length === 1 ? "a pasted image" : `${localImages.length} pasted images`}, ` +
-        "which Joyce can't upload to GitHub yet. Remove them, or use images hosted online, to save it.",
-    );
+export async function saveEntry(localPath: string, text: string, req: SaveRequest, opts: { overwrite?: boolean } = {}): Promise<Link> {
+  try {
+    return await trySave(localPath, text, req, opts.overwrite ?? false);
+  } catch (e) {
+    // Someone else committed meanwhile. Start over, so their change to this entry (if any) is noticed.
+    if (!(e instanceof BranchMoved)) throw e;
+    try {
+      return await trySave(localPath, text, req, opts.overwrite ?? false);
+    } catch (again) {
+      if (again instanceof BranchMoved) throw new SaveConflict("changed", "The site changed on GitHub while saving. Try again.");
+      throw again;
+    }
   }
+}
+
+async function trySave(localPath: string, text: string, req: SaveRequest, overwrite: boolean): Promise<Link> {
+  const { site, collection, values } = req;
+  let { body } = collection.fields.some((f) => f.name === collection.identifier) ? splitTitle(text) : { body: text };
 
   const stored = getLink(localPath);
   // A link to another site, collection or branch doesn't apply here.
@@ -383,11 +485,15 @@ export async function saveEntry(localPath: string, text: string, req: SaveReques
         "Create the entry in the CMS first, then Joyce can update its text.",
     );
   }
-  const content = buildEntry(collection, values, body, remote?.content);
 
-  const base: Link = { site: site.id, collection: collection.name, values, repo: site.repo, branch: site.branch, path };
+  const images = await placeImages(site, collection, path, values, localPath, body);
+  body = images.body;
+  const savedValues = images.values;
+  const content = buildEntry(collection, savedValues, body, remote?.content);
+
+  const base: Link = { site: site.id, collection: collection.name, values: savedValues, repo: site.repo, branch: site.branch, path };
   // Nothing to commit, and nothing to conflict with.
-  if (remote && content === remote.content) {
+  if (remote && content === remote.content && !images.uploads.length) {
     const unchanged = { ...link, ...base, sha: remote.sha, savedAt: Date.now() };
     setLink(localPath, unchanged);
     return unchanged;
@@ -403,20 +509,96 @@ export async function saveEntry(localPath: string, text: string, req: SaveReques
   }
 
   const draft = values.draft === true ? " draft" : "";
-  const res = await api("PUT", contentsPath(site.repo, path), {
-    message: `${remote ? "Update" : "Create"} ${collection.labelSingular.toLowerCase()}${draft} “${req.title}” (from Joyce)`,
-    content: toBase64(content),
-    branch: site.branch,
-    ...(remote ? { sha: remote.sha } : {}),
-  });
-  if (res.status === 409 || res.status === 422) {
-    throw new SaveConflict("changed", "The entry changed on GitHub while saving. Try again.");
-  }
-  if (res.status !== 200 && res.status !== 201) throw apiError(res, "Saving to GitHub");
+  const n = images.uploads.length;
+  const withImages = n ? ` with ${n === 1 ? "an image" : `${n} images`}` : "";
+  const commit = await commitFiles(
+    site.repo,
+    site.branch,
+    `${remote ? "Update" : "Create"} ${collection.labelSingular.toLowerCase()}${draft} “${req.title}”${withImages} (from Joyce)`,
+    [...images.uploads, { path, text: content }],
+  );
 
-  const saved: Link = { ...base, sha: res.body.content.sha, savedAt: Date.now(), commitUrl: res.body.commit.html_url };
+  const saved: Link = { ...base, sha: await blobSha(new TextEncoder().encode(content)), savedAt: Date.now(), commitUrl: commit.url };
   setLink(localPath, saved);
   return saved;
+}
+
+/**
+ * Finds images to upload — pasted into the document, or chosen for an image
+ * field such as a hero — and points both the Markdown and those fields at the
+ * site's media folder, the way the CMS links images it uploads. Images already
+ * on the site with the same bytes aren't sent again; a different file with the
+ * same name gets a numbered name instead. One file chosen twice is uploaded once.
+ */
+async function placeImages(site: Site, collection: Collection, entry: string, values: Values, localPath: string, body: string) {
+  const uploads: CommitFile[] = [];
+  const where = mediaLocation(collection, entry, values);
+  const refs = localImages(body, where?.prefix);
+  const choices = localImageChoices(collection, values);
+  if (!refs.length && !choices.length) return { body, values, uploads };
+  if (!where) {
+    throw new Error(
+      `${site.name}'s CMS config doesn't say where ${collection.label.toLowerCase()} images go (its media_folder), ` +
+        "so Joyce can't upload the images in this. Remove them, or use images hosted online.",
+    );
+  }
+
+  const existing = await listFolder(site.repo, site.branch, where.folder);
+  // The same file on disk (a pasted image also chosen as the hero) goes up once.
+  const byFile = new Map<string, string>();
+  const place = async (ref: string) => {
+    const abs = resolveDocImage(localPath, ref);
+    const cached = abs ? byFile.get(abs) : undefined;
+    if (cached) return cached;
+    let base64: string;
+    try {
+      if (!abs) throw new Error();
+      base64 = await storage.readImage(abs);
+    } catch {
+      throw new Error(`Can't find the image “${decodeRef(ref)}” on this computer, so it can't be uploaded. Paste it again, or remove it.`);
+    }
+    const sha = await blobSha(fromBase64Bytes(base64));
+    const assigned = assignImageName(siteImageName(basename(decodeRef(ref))), sha, existing);
+    if (assigned.upload) {
+      uploads.push({ path: where.folder ? `${where.folder}/${assigned.name}` : assigned.name, base64 });
+      existing.set(assigned.name, sha);
+    }
+    const pub = `${where.prefix}${assigned.name}`;
+    if (abs) byFile.set(abs, pub);
+    return pub;
+  };
+
+  const placed = new Map<string, string>();
+  for (const ref of refs) placed.set(ref, await place(ref));
+  const next = { ...values };
+  for (const choice of choices) next[choice.field] = await place(choice.local);
+  return {
+    body: body.replace(IMAGE, (m, open: string, ref: string, close: string) => (placed.has(ref) ? `${open}${placed.get(ref)}${close}` : m)),
+    values: next,
+    uploads,
+  };
+}
+
+/** Relative paths of image files chosen for this document's fields (a hero, a cover). */
+export function linkedImageRefs(localPath: string): string[] {
+  const link = getLink(localPath);
+  if (!link) return [];
+  return Object.values(link.values).flatMap((v) => (isLocalImage(v) ? [v.local] : []));
+}
+
+/** Points a chosen image at a new relative path after its file was renamed to avoid a clash. */
+export function retargetLocalImage(localPath: string, from: string, to: string) {
+  const link = getLink(localPath);
+  if (!link || from === to) return;
+  let changed = false;
+  const values: Values = { ...link.values };
+  for (const [key, value] of Object.entries(values)) {
+    if (isLocalImage(value) && value.local === from) {
+      values[key] = { local: to };
+      changed = true;
+    }
+  }
+  if (changed) setLink(localPath, { ...link, values });
 }
 
 /** The entry's current front matter on GitHub, for editing an entry saved before. */

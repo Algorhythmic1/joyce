@@ -16,9 +16,10 @@ export type FieldKind =
   | "number"
   | "select"
   | "list"
+  | "image"
   | "body"
   | "hidden"
-  /** Something Joyce can't edit (images, relations, objects…): left as it is. */
+  /** Something Joyce can't edit (relations, objects, galleries…): left as it is. */
   | "other";
 
 export interface Field {
@@ -50,8 +51,22 @@ export interface Collection {
   /** Field whose value is the entry's title. */
   identifier: string;
   fields: Field[];
+  /** Where the entry's images go, if the config says. */
+  media?: Media;
   /** Why Joyce can't publish into this collection, if it can't. */
   unsupported?: string;
+}
+
+/**
+ * A `media_folder` / `public_folder` pair. Both may hold templates ({{slug}},
+ * {{filename}}…). A collection's own media folder is relative to its entry's
+ * folder unless it starts with "/"; the site-wide one is relative to the repo.
+ */
+export interface Media {
+  /** Where image files are committed. */
+  folder: string;
+  /** What the Markdown links to an image with: the path prefix before its name. */
+  publicFolder: string;
 }
 
 export interface SiteConfig {
@@ -107,12 +122,17 @@ function parseField(raw: Raw): Field {
     case "list":
       // A plain list of strings (like tags). Lists of objects aren't editable here.
       return { ...base, kind: raw.field || raw.fields || raw.types ? "other" : "list" };
+    case "image":
+      // One image, stored with the collection's other images. A gallery, or a field
+      // with its own media folder, stays with the CMS.
+      if (raw.multiple === true || str(raw.media_folder) !== undefined) return { ...base, kind: "other" };
+      return { ...base, kind: "image" };
     default:
       return { ...base, kind: "other" };
   }
 }
 
-function parseCollection(raw: Raw): Collection | null {
+function parseCollection(raw: Raw, siteMedia?: Media): Collection | null {
   if (!raw.name) return null;
   const name = String(raw.name);
   const label = str(raw.label) ?? name;
@@ -129,6 +149,7 @@ function parseCollection(raw: Raw): Collection | null {
     path: str(raw.path),
     identifier: str(raw.identifier_field) ?? "title",
     fields,
+    media: collectionMedia(raw, siteMedia),
   };
   if (!raw.folder) c.unsupported = "It's a set of fixed files, not a folder of entries.";
   else if (!["md", "mdx", "markdown"].includes(extension)) c.unsupported = `Its entries are .${extension} files, not Markdown.`;
@@ -137,15 +158,33 @@ function parseCollection(raw: Raw): Collection | null {
   return c;
 }
 
+function siteMedia(raw: Raw): Media | undefined {
+  const folder = str(raw.media_folder);
+  if (folder === undefined) return undefined;
+  // Site-wide folders are from the repo root, written with or without a leading "/".
+  const rooted = `/${folder.replace(/^\/+/, "")}`;
+  return { folder: rooted, publicFolder: str(raw.public_folder) ?? rooted };
+}
+
+function collectionMedia(raw: Raw, site?: Media): Media | undefined {
+  const folder = str(raw.media_folder);
+  if (folder === undefined) return site;
+  // {{media_folder}} and {{public_folder}} mean the site-wide ones.
+  const inherit = (t: string) =>
+    t.replace(/\{\{\s*media_folder\s*\}\}/g, site?.folder.slice(1) ?? "").replace(/\{\{\s*public_folder\s*\}\}/g, site?.publicFolder ?? "");
+  return { folder: inherit(folder), publicFolder: inherit(str(raw.public_folder) ?? folder) };
+}
+
 export function parseConfig(text: string): SiteConfig {
   const raw = (parseYaml(text) ?? {}) as Raw;
   const backend = (raw.backend ?? {}) as Raw;
+  const media = siteMedia(raw);
   return {
     repo: str(backend.repo),
     branch: str(backend.branch),
     siteUrl: str(raw.site_url) ?? str(raw.display_url),
     collections: (Array.isArray(raw.collections) ? (raw.collections as Raw[]) : [])
-      .map(parseCollection)
+      .map((c) => parseCollection(c, media))
       .filter((c): c is Collection => !!c),
   };
 }
@@ -179,6 +218,42 @@ export const slugify = (s: string) =>
 
 /** Fields the publish form shows (others are kept as they are, or get their defaults). */
 export const editable = (f: Field) => !["body", "hidden", "other"].includes(f.kind);
+
+/** A file on this computer chosen for an image field, relative to the document. */
+export interface LocalImage {
+  local: string;
+}
+
+export const isLocalImage = (v: unknown): v is LocalImage =>
+  !!v && typeof v === "object" && typeof (v as LocalImage).local === "string" && (v as LocalImage).local !== "";
+
+/** Image fields the user has chosen a file for (not a path already on the site). */
+export function localImageChoices(c: Collection, values: Values): { field: string; local: string }[] {
+  const out: { field: string; local: string }[] = [];
+  for (const f of c.fields) {
+    const value = values[f.name];
+    if (f.kind === "image" && isLocalImage(value)) out.push({ field: f.name, local: value.local });
+  }
+  return out;
+}
+
+/** A file's name as the site will have it: URL-safe, so the link needs no escaping. */
+export function siteImageName(localName: string) {
+  const dot = localName.lastIndexOf(".");
+  const ext = dot > 0 ? localName.slice(dot + 1).toLowerCase().replace(/[^a-z0-9]/g, "") : "";
+  const base = slugify(dot > 0 ? localName.slice(0, dot) : localName) || "image";
+  return ext ? `${base}.${ext}` : base;
+}
+
+/**
+ * Name to use in the media folder. Identical bytes keep the name already there;
+ * a different file with that name gets `photo-2.png`, then `photo-3.png`.
+ */
+export function assignImageName(wanted: string, sha: string, existing: Map<string, string>): { name: string; upload: boolean } {
+  let name = wanted;
+  for (let i = 2; existing.has(name) && existing.get(name) !== sha; i++) name = wanted.replace(/(\.[^.]*)?$/, `-${i}$1`);
+  return { name, upload: existing.get(name) !== sha };
+}
 
 /** The collection's draft switch, if it has one (a boolean field named "draft"). */
 export const draftField = (c: Collection) => c.fields.find((f) => f.name === "draft" && f.kind === "boolean");
@@ -277,6 +352,9 @@ function output(f: Field, value: unknown): unknown {
       const n = Number(value);
       return Number.isNaN(n) ? undefined : f.valueType === "float" ? n : Math.round(n);
     }
+    case "image":
+      // A chosen local file is turned into a site path before this runs.
+      return typeof value === "string" && value ? value : undefined;
     case "date":
     case "datetime":
       return empty ? undefined : formatDate(f, String(value));
@@ -340,6 +418,45 @@ export const entryPath = (c: Collection, name: string) => `${c.folder ? `${c.fol
 export const entryName = (c: Collection, values: Values, now = new Date()) =>
   expandTemplate(c.path ?? c.slug, c, values, now).replace(/^\/+|\/+$/g, "");
 
+/** Resolves "." and ".." in a slash-separated path. Null if it climbs out of the root. */
+export function normalizePath(path: string): string | null {
+  const out: string[] = [];
+  for (const part of path.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part !== "..") out.push(part);
+    else if (!out.length) return null;
+    else out.pop();
+  }
+  return out.join("/");
+}
+
+/**
+ * Where an entry's images go: the repo folder to commit them to, and the prefix
+ * the Markdown links to them with (e.g. "../../assets/blog/" or "/uploads/").
+ * Null if the site's config doesn't say, or says somewhere outside the repo.
+ */
+export function mediaLocation(c: Collection, entryRepoPath: string, values: Values): { folder: string; prefix: string } | null {
+  if (!c.media) return null;
+  const file = entryRepoPath.slice(entryRepoPath.lastIndexOf("/") + 1);
+  const entryDir = entryRepoPath.slice(0, Math.max(0, entryRepoPath.lastIndexOf("/")));
+  const inCollection = c.folder && entryDir.startsWith(c.folder) ? entryDir.slice(c.folder.length).replace(/^\//, "") : "";
+  const filename = file.replace(/\.[^.]*$/, "");
+  const vars: Record<string, string> = {
+    filename,
+    extension: c.extension,
+    dirname: inCollection,
+    // A nested entry (".../{{slug}}/index") is named by its folder.
+    slug: c.path && inCollection ? inCollection.split("/").pop()! : filename,
+  };
+  const expand = (t: string) =>
+    t.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (m, k: string) => vars[k] ?? expandTemplate(m, c, values));
+  const folder = expand(c.media.folder);
+  const repoFolder = normalizePath(folder.startsWith("/") ? folder : `${entryDir}/${folder}`);
+  if (repoFolder === null) return null;
+  const pub = expand(c.media.publicFolder);
+  return { folder: repoFolder, prefix: pub === "" ? "" : `${pub.replace(/\/+$/, "")}/` };
+}
+
 /**
  * MDX treats `<` and `{` as JSX. Prose can contain both ("x < y", "{sic}"), so
  * escape them everywhere except inside code, where they're already literal.
@@ -371,8 +488,8 @@ export function parseEntry(content: string): { data: Raw; body: string } {
 
 /**
  * Builds the entry file: front matter in the collection's field order, then the
- * body. Updating an existing entry keeps every key Joyce doesn't edit (images,
- * relations, fields the CMS added) exactly as it was.
+ * body. Updating an existing entry keeps every key Joyce doesn't edit (relations,
+ * galleries, fields the CMS added) exactly as it was.
  */
 export function buildEntry(c: Collection, values: Values, body: string, existing?: string): string {
   const prior = existing ? parseEntry(existing).data : {};

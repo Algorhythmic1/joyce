@@ -33,6 +33,8 @@ export interface Storage {
   trash(path: string): Promise<void>;
   /** Saves image bytes (base64) at `path`, creating folders as needed. Never overwrites. */
   writeImage(path: string, base64: string): Promise<void>;
+  /** An image's bytes, as base64. */
+  readImage(path: string): Promise<string>;
   /** A URL the webview can display the image at `path` with. */
   imageUrl(path: string): string;
   /** Lets images inside `dir` be displayed. */
@@ -75,6 +77,7 @@ const tauriStorage: Storage = {
   rename: (from, to) => invoke("rename_path", { from, to }),
   trash: (path) => invoke("trash_path", { path }),
   writeImage: (path, base64) => invoke("write_image", { path, base64 }),
+  readImage: (path) => invoke("read_image", { path }),
   imageUrl: (path) => convertFileSrc(path),
   allowImages: (dir) => invoke("allow_images_from", { dir }),
   listFiles: (dir) => invoke("list_files", { dir }),
@@ -162,6 +165,7 @@ const demoStorage: Storage = (() => {
       const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : `image/${ext === "svg" ? "svg+xml" : ext}`;
       images.set(path, `data:${mime};base64,${base64}`);
     },
+    readImage: async (path) => images.get(path)?.split(",")[1] ?? fail("No such image"),
     imageUrl: (path) => images.get(path) ?? "",
     allowImages: async () => {},
     listFiles: async (dir) => Object.keys(state.files).filter((f) => dirname(f) === dir).map(basename),
