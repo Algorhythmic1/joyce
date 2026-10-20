@@ -56,6 +56,23 @@
 .canvas-add { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--canvas-stroke); border-radius: 9px; background: var(--canvas-panel); padding: 9px 13px; color: var(--text); font-size: 12px; box-shadow: 0 3px 10px #00000006; cursor: pointer; }
 .canvas-add:hover { background: var(--hover); }
 .canvas-add:disabled { opacity: .5; }
+.canvas-layout-button:disabled { opacity: .5; cursor: default; }
+.canvas-website-card { padding: 0; }
+.canvas-website-content { height: 100%; display: flex; flex-direction: column; border-radius: inherit; overflow: hidden; cursor: grab; }
+.canvas-website-preview { position: relative; flex: 1; min-height: 0; overflow: hidden; background: #fff; color: #555; }
+.canvas-website-preview iframe { display: block; border: 0; transform-origin: top left; pointer-events: none; background: #fff; }
+.canvas-website-placeholder { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; font-size: 11px; }
+.canvas-website-placeholder > span:first-child { font-size: 23px; }.canvas-website-placeholder small { font-size: 9px; color: #777; }
+.canvas-website-caption { display: flex; align-items: center; gap: 8px; flex-shrink: 0; height: 45px; padding: 6px 16px 6px 12px; border-top: 1px solid var(--canvas-stroke); }
+.canvas-website-caption > div { min-width: 0; flex: 1; }.canvas-website-caption strong, .canvas-website-caption div > span { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.canvas-website-caption strong { font-size: 12px; font-weight: 500; }.canvas-website-caption div > span { font-size: 9px; color: var(--muted); margin-top: 2px; }.canvas-website-caption > span { font-size: 17px; color: var(--muted); }
+.canvas-website-card .canvas-card-symbol { position: absolute; top: 8px; right: 8px; z-index: 1; padding: 4px; border-radius: 6px; background: var(--panel-bg); pointer-events: none; }
+.canvas-website-editor { top: 80px; right: 20px; width: 330px; max-width: calc(100% - 40px); }
+.canvas-website-editor label { display: block; margin-bottom: 12px; font-size: 11px; color: var(--ui-text); }
+.canvas-website-editor input { display: block; width: 100%; margin-top: 6px; padding: 9px; border: 1px solid var(--canvas-stroke); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+.canvas-website-editor input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.canvas-website-editor p { color: var(--muted); font-size: 11px; line-height: 1.6; }.canvas-website-editor .canvas-website-validation { color: var(--icon-orange); }
+.canvas-website-editor-actions { display: flex; justify-content: flex-end; align-items: center; gap: 12px; }.canvas-website-editor-actions button { cursor: pointer; }
 .canvas-layout-button { display: grid; place-items: center; width: 28px; height: 30px; padding: 5px; border-radius: 6px; color: var(--ui-text); cursor: pointer; }
 .canvas-layout-button:hover { background: var(--hover); color: var(--text); }
 .canvas-layout-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.35; stroke-linecap: round; stroke-linejoin: round; }

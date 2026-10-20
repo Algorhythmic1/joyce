@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { ASSETS_DIR, basename, dirname, join, slugify, storage } from "../fs";
 import * as gh from "../integrations/github";
 import type { DeviceCode, Link, Site } from "../integrations/github";
 import { cmsForPath, cmsName, type CmsKind } from "../integrations/cms";
 import {
-  defaultValues, draftField, editable, entryName, entryPath, missingRequired, titleField, unfillable, valuesFrom,
+  defaultValues, draftField, editable, entryName, entryPath, isLocalImage, mediaLocation, missingRequired, titleField, unfillable,
+  valuesFrom,
   type Collection, type Field, type SiteConfig, type Values,
 } from "../integrations/sveltia";
 
@@ -291,9 +293,12 @@ function EntryForm(props: { site: Site; collection: Collection; localPath: strin
     };
   }, []);
 
-  // Remember edits even before the first save.
+  // Remember edits even before the first save. Read the stored link so a save's
+  // record of what was committed isn't overwritten by the values from this form.
   useEffect(() => {
-    gh.setLink(localPath, { ...(link ?? {}), site: site.id, collection: collection.name, values });
+    const stored = gh.getLink(localPath);
+    const same = stored?.site === site.id && stored.collection === collection.name ? stored : undefined;
+    gh.setLink(localPath, { ...(same ?? link ?? {}), site: site.id, collection: collection.name, values });
   }, [values]);
 
   const set = (field: string, value: unknown) =>
@@ -308,6 +313,10 @@ function EntryForm(props: { site: Site; collection: Collection; localPath: strin
   const kept = collection.fields.filter((f) => f.kind === "other");
   // A new entry would be missing these, which can break the site's build.
   const blocking = saved ? [] : unfillable(collection);
+  const target = link?.path ?? entryPath(collection, name || "entry");
+  const media = mediaLocation(collection, target, values);
+  const images = gh.imagesToUpload(getText(), collection, values, media?.prefix);
+  const saving = status.kind === "saving";
 
   const save = async (overwrite = false) => {
     if (missing.length) return setStatus({ kind: "error", message: `Still needed: ${missing.join(", ")}.` });
@@ -321,6 +330,7 @@ function EntryForm(props: { site: Site; collection: Collection; localPath: strin
         { overwrite },
       );
       setLinkState(result);
+      setValues(result.values);
       setStatus({ kind: "saved" });
     } catch (e) {
       if (e instanceof gh.SaveConflict) setStatus({ kind: "conflict", message: e.message });
@@ -332,9 +342,21 @@ function EntryForm(props: { site: Site; collection: Collection; localPath: strin
 
   return (
     <section className="post-form">
-      {collection.fields.filter(editable).map((f) => (
-        <FieldInput key={f.name} field={f} value={values[f.name]} onChange={(v) => set(f.name, v)} />
-      ))}
+      {collection.fields.filter(editable).map((f) =>
+        f.kind === "image" ? (
+          <ImageInput
+            key={f.name}
+            field={f}
+            value={values[f.name]}
+            localPath={localPath}
+            getText={getText}
+            disabled={saving}
+            onChange={(v) => set(f.name, v)}
+          />
+        ) : (
+          <FieldInput key={f.name} field={f} value={values[f.name]} onChange={(v) => set(f.name, v)} />
+        ),
+      )}
 
       <label className="field">
         <span>File</span>
@@ -361,6 +383,17 @@ function EntryForm(props: { site: Site; collection: Collection; localPath: strin
           Left as they are on the site: {kept.map((f) => f.label).join(", ")}. Edit those in the CMS.
         </p>
       )}
+      {images > 0 &&
+        (media ? (
+          <p className="hint">
+            {images === 1 ? "Its image" : `Its ${images} images`} will be uploaded to {media.folder || "the repository root"}, in the
+            same commit.
+          </p>
+        ) : (
+          <p className="warning-text">
+            {props.site.name}'s CMS config doesn't say where images go, so this can't be saved with its images.
+          </p>
+        ))}
       {publishing && <p className="warning-text">Saving will publish this on the live site.</p>}
       {blocking.length > 0 && (
         <p className="warning-text">
@@ -378,8 +411,8 @@ function EntryForm(props: { site: Site; collection: Collection; localPath: strin
           </div>
         </div>
       ) : (
-        <button className="primary" disabled={status.kind === "saving" || blocking.length > 0} onClick={() => save()}>
-          {status.kind === "saving" ? "Saving…" : draft ? (publishing ? "Save & publish" : "Save draft") : `Save to ${props.site.name}`}
+        <button className="primary" disabled={saving || blocking.length > 0} onClick={() => save()}>
+          {saving ? "Saving…" : draft ? (publishing ? "Save & publish" : "Save draft") : `Save to ${props.site.name}`}
         </button>
       )}
 
@@ -398,6 +431,130 @@ function EntryForm(props: { site: Site; collection: Collection; localPath: strin
       )}
       {!saved && <p className="hint">Will be saved as {entryPath(collection, name || "…")}.</p>}
     </section>
+  );
+}
+
+const fileToBase64 = (file: File) =>
+  new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",")[1] ?? "");
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+
+/** Copies a chosen image next to the document, and returns its relative path. */
+async function keepPickedImage(docPath: string, file: File): Promise<string> {
+  const fromName = file.name.includes(".") ? file.name.slice(file.name.lastIndexOf(".") + 1) : "";
+  const ext = (fromName || file.type.split("/")[1] || "png").toLowerCase().replace("jpeg", "jpg").replace("svg+xml", "svg").replace(/[^a-z0-9]/g, "") || "png";
+  const base = slugify(file.name.replace(/\.[^.]+$/, "")) || "image";
+  const dir = join(dirname(docPath), ASSETS_DIR);
+  const bytes = await fileToBase64(file);
+  for (let i = 1; i <= 50; i++) {
+    const name = i === 1 ? `${base}.${ext}` : `${base}-${i}.${ext}`;
+    try {
+      await storage.writeImage(join(dir, name), bytes);
+      return `${ASSETS_DIR}/${name}`;
+    } catch (e) {
+      if (!/exists/i.test(String(e))) throw e;
+    }
+  }
+  throw new Error("Couldn't save that image.");
+}
+
+/** A CMS image field: a hero, a cover. Choose a file, or one already in the document. */
+function ImageInput(props: {
+  field: Field;
+  value: unknown;
+  onChange: (v: unknown) => void;
+  localPath: string;
+  getText: () => string;
+  disabled?: boolean;
+}) {
+  const { field, value, onChange, localPath, getText, disabled } = props;
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [error, setError] = useState<string | null>(null);
+  const local = isLocalImage(value) ? value.local : null;
+  const sitePath = typeof value === "string" ? value : "";
+  const preview = local ? storage.imageUrl(gh.resolveDocImage(localPath, local) ?? "") : "";
+  const inDoc = gh.localImages(getText()).map((ref) => {
+    const bare = ref.replace(/^<|>$/g, "");
+    let decoded = bare;
+    try {
+      decoded = decodeURI(bare);
+    } catch {
+      // Not percent-encoded; use as written.
+    }
+    const rel = decoded.replace(/^\.\//, "");
+    return { ref: rel, url: storage.imageUrl(gh.resolveDocImage(localPath, rel) ?? "") };
+  });
+
+  const chooseFile = async (file: File | undefined) => {
+    if (!file) return;
+    setError(null);
+    try {
+      onChange({ local: await keepPickedImage(localPath, file) });
+    } catch (e) {
+      setError(String(e instanceof Error ? e.message : e));
+    }
+  };
+
+  return (
+    <div className="field image-field">
+      <span>
+        {field.label}
+        {!field.required && <span className="muted"> (optional)</span>}
+      </span>
+      {(local || sitePath) && (
+        <div className="image-choice">
+          {preview && <img src={preview} alt="" />}
+          <span className="image-meta">
+            <span className="readonly">{basename(local || sitePath)}</span>
+            <span className="field-hint">{local ? "Will be uploaded with the post" : "On the site"}</span>
+            <button type="button" className="link-button" disabled={disabled} onClick={() => onChange("")}>
+              Remove
+            </button>
+          </span>
+        </div>
+      )}
+      <div className="row">
+        <button type="button" className="secondary" disabled={disabled} onClick={() => fileRef.current?.click()}>
+          {local || sitePath ? "Replace image" : "Choose image"}
+        </button>
+      </div>
+      <input
+        ref={fileRef}
+        className="image-file"
+        type="file"
+        accept="image/*"
+        aria-label={field.label}
+        onChange={(e) => {
+          const file = e.currentTarget.files?.[0];
+          e.currentTarget.value = "";
+          void chooseFile(file);
+        }}
+      />
+      {inDoc.length > 0 && (
+        <>
+          <span className="field-hint">In this document</span>
+          <div className="doc-images">
+            {inDoc.map((img) => (
+              <button
+                type="button"
+                key={img.ref}
+                className={local === img.ref ? "selected" : ""}
+                disabled={disabled}
+                title={basename(img.ref)}
+                onClick={() => onChange({ local: img.ref })}
+              >
+                {img.url ? <img src={img.url} alt="" /> : <span className="image-placeholder" aria-hidden="true" />}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+      {field.hint && <span className="field-hint">{field.hint}</span>}
+      {error && <p className="error-text">{error}</p>}
+    </div>
   );
 }
 

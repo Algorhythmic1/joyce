@@ -301,19 +301,24 @@ button {
 
 .sidebar-header {
   display: flex;
-  align-items: center;
-  gap: 4px;
-  height: var(--toolbar-height);
-  padding: 0 8px 0 calc(8px + var(--traffic-lights));
+  flex-direction: column;
+  align-items: stretch;
   flex-shrink: 0;
+  padding-bottom: 2px;
 }
 
 .folder-name {
-  flex: 1;
+  flex: none;
+  align-self: stretch;
+  width: auto;
   min-width: 0;
+  /* Keeps the title row the same height as the toolbar. Margins, not padding,
+     hold the macOS traffic lights so the hover highlight stays clear of them. */
+  margin: 7px 8px 7px calc(8px + var(--traffic-lights));
+  padding: 4px 6px;
+  line-height: 18px;
   text-align: left;
   font-weight: 600;
-  padding: 4px 6px;
   border-radius: 6px;
   white-space: nowrap;
   overflow: hidden;
@@ -327,6 +332,8 @@ button {
 
 .sidebar-actions {
   display: flex;
+  align-items: center;
+  padding: 0 8px;
 }
 
 .tree {
@@ -1543,6 +1550,64 @@ body.resizing * {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.image-field .image-file {
+  display: none;
+}
+
+.image-choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.image-choice img,
+.doc-images img,
+.image-placeholder {
+  display: inline-block;
+  width: 64px;
+  height: 44px;
+  object-fit: cover;
+  border-radius: 4px;
+  background: var(--hover);
+  flex-shrink: 0;
+}
+
+.image-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  min-width: 0;
+}
+
+.image-meta .readonly {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.doc-images {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+}
+
+.doc-images button {
+  padding: 2px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+}
+
+.doc-images button.selected {
+  border-color: var(--accent);
+}
+
+.doc-images button:disabled {
+  opacity: 0.45;
 }
 
 .publish-panel {

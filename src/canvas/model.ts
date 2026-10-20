@@ -1,4 +1,5 @@
 import { COLORS, SYMBOLS, type SectionIcon } from "../sectionIcons.ts";
+import { websiteUrl } from "./websites.ts";
 
 export type Point = { x: number; y: number };
 export type Camera = Point & { zoom: number };
@@ -11,6 +12,8 @@ export type Card = Point & {
   height: number;
   textSize: 14 | 17 | 21;
   icon?: SectionIcon;
+  kind?: "idea" | "website";
+  url?: string;
 };
 export type Connection = { id: string; from: string; to: string; fromSide: Side; toSide: Side; arrow: boolean };
 export type Board = { version: 1; id: string; cards: Card[]; connections: Connection[] };
@@ -19,6 +22,7 @@ export const SIDES: Side[] = ["top", "right", "bottom", "left"];
 export const MIN_CARD = { width: 180, height: 100 };
 export const newBoard = (): Board => ({ version: 1, id: crypto.randomUUID(), cards: [], connections: [] });
 export const newCard = (p: Point): Card => ({ ...p, id: crypto.randomUUID(), title: "", body: "", width: 280, height: 160, textSize: 17 });
+export const newWebsiteCard = (p: Point, url: string, title = ""): Card => ({ ...newCard(p), kind: "website", url: websiteUrl(url), title });
 export const screenToWorld = (p: Point, c: Camera): Point => ({ x: (p.x - c.x) / c.zoom, y: (p.y - c.y) / c.zoom });
 export const worldToScreen = (p: Point, c: Camera): Point => ({ x: p.x * c.zoom + c.x, y: p.y * c.zoom + c.y });
 export const zoomAt = (c: Camera, p: Point, zoom: number): Camera => {
@@ -79,6 +83,10 @@ export function parseBoard(raw: unknown): Board {
       ![14, 17, 21].includes(c.textSize as number)) throw new Error("A canvas card is invalid. Its file has been kept unchanged.");
     if (c.icon !== undefined && (!object(c.icon) || typeof c.icon.symbol !== "string" || typeof c.icon.color !== "string" ||
       !Object.hasOwn(SYMBOLS, c.icon.symbol) || !Object.hasOwn(COLORS, c.icon.color))) throw new Error("A canvas icon is invalid. Its file has been kept unchanged.");
+    if (c.kind !== undefined && c.kind !== "idea" && c.kind !== "website") throw new Error("A canvas card type is unsupported. Its file has been kept unchanged.");
+    if (c.kind === "website") {
+      if (typeof c.url !== "string" || websiteUrl(c.url) !== c.url) throw new Error("A website card address is invalid. Its file has been kept unchanged.");
+    } else if (c.url !== undefined) throw new Error("A canvas card address is invalid. Its file has been kept unchanged.");
     ids.add(c.id);
   }
   const edges = new Set<string>(), pairs = new Set<string>();

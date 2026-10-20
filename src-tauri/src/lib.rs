@@ -1,5 +1,6 @@
 mod github;
 mod sync;
+mod websites;
 
 use serde::Serialize;
 use std::fs;
@@ -158,6 +159,13 @@ fn write_image(path: String, base64: String) -> Result<(), String> {
     Ok(())
 }
 
+/// A document's image, as base64, for uploading it to a site.
+#[tauri::command]
+fn read_image(path: String) -> Result<String, String> {
+    use base64::Engine;
+    Ok(base64::engine::general_purpose::STANDARD.encode(fs::read(path).map_err(err)?))
+}
+
 /// Lets the webview display images from the writing folder (and nowhere else).
 #[tauri::command]
 fn allow_images_from(app: tauri::AppHandle, dir: String) -> Result<(), String> {
@@ -203,7 +211,10 @@ pub fn run() {
             rename_path,
             trash_path,
             write_image,
+            read_image,
             allow_images_from,
+            websites::website_preview,
+            websites::website_open,
             github::github_signed_in,
             github::github_sign_out,
             github::github_device_start,

@@ -1,6 +1,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { createServer } from "vite";
 
 // Load the actual frontend modules through Vite, with the desktop bridge mocked.
@@ -13,6 +14,7 @@ const fixture = readFileSync(new URL("fixtures/pages.yml", import.meta.url), "ut
 const legacy = "backend: { name: github, repo: owner/blog, branch: publishing }\ncollections:\n- name: posts\n  folder: posts\n  fields:\n  - { name: title, widget: string }\n  - { name: body, widget: markdown }\n";
 const encoded = (content, sha = "config-sha") => ({ status: 200, body: { content: Buffer.from(content).toString("base64"), sha } });
 const missing = { status: 404, body: {} };
+const gitSha = content => createHash("sha1").update(`blob ${Buffer.byteLength(content)}\0`).update(content).digest("hex");
 
 before(async () => {
   globalThis.localStorage = { getItem: key => memory.get(key) ?? null, setItem: (key, value) => memory.set(key, value) };
@@ -46,6 +48,39 @@ function repoApi(files, tree = []) {
     if (path.includes("/git/trees/")) return { status: 200, body: { tree: tree.map(path => ({ path, type: "blob" })) } };
     const name = decodeURIComponent(path.split("/contents/")[1]?.split("?")[0] ?? "");
     return files.has(name) ? encoded(files.get(name)) : missing;
+  };
+}
+
+/**
+ * A branch saves commit to through the Git data API: read the head, build a tree,
+ * commit it and move the branch. `repo.files` holds what's on the branch.
+ */
+function branchApi(repo) {
+  return ({ method, path, body }) => {
+    const route = path.split("?")[0];
+    if (method === "GET" && route.startsWith("/repos/owner/blog/contents/")) {
+      const name = decodeURIComponent(route.slice("/repos/owner/blog/contents/".length));
+      const file = repo.files.get(name);
+      return file ? encoded(file.content, file.sha) : missing;
+    }
+    if (method === "GET" && route === "/repos/owner/blog/git/ref/heads/main") return { status: 200, body: { object: { sha: `head-${repo.commits}` } } };
+    if (method === "GET" && route === `/repos/owner/blog/git/commits/head-${repo.commits}`) return { status: 200, body: { tree: { sha: `tree-${repo.commits}` } } };
+    if (method === "POST" && route === "/repos/owner/blog/git/trees") {
+      assert.equal(body.base_tree, `tree-${repo.commits}`);
+      repo.pending = body.tree;
+      return { status: 201, body: { sha: "new-tree" } };
+    }
+    if (method === "POST" && route === "/repos/owner/blog/git/commits") {
+      assert.deepEqual(body.parents, [`head-${repo.commits}`]);
+      return { status: 201, body: { sha: "new-commit", html_url: "https://github.com/owner/blog/commit/123" } };
+    }
+    if (method === "PATCH" && route === "/repos/owner/blog/git/refs/heads/main") {
+      assert.equal(body.force, false);
+      for (const f of repo.pending) repo.files.set(f.path, { content: f.content, sha: gitSha(f.content) });
+      repo.commits++;
+      return { status: 200, body: {} };
+    }
+    throw new Error(`Unexpected GitHub call: ${method} ${path}`);
   };
 }
 
@@ -101,35 +136,30 @@ test("Pages saves create and update entries, skip identical content and refuse e
   const values = cms.defaultValues(collection, "Hello Pages", new Date(2026, 9, 11));
   const name = cms.entryName(collection, values, new Date(2026, 9, 11));
   const req = { site, collection, values, name, title: "Hello Pages" };
-  let remote, writes = 0;
-  handleApi = ({ method, path, body }) => {
-    assert.equal(path.split("?")[0], "/repos/owner/blog/contents/content/posts/2026-10-11-hello-pages.md");
-    if (method === "GET") return remote ? encoded(remote.content, remote.sha) : missing;
-    assert.equal(method, "PUT");
-    assert.equal(body.branch, "main");
-    if (remote) assert.equal(body.sha, remote.sha);
-    remote = { content: Buffer.from(body.content, "base64").toString("utf8"), sha: `saved-${++writes}` };
-    return { status: 201, body: { content: { sha: remote.sha }, commit: { html_url: "https://github.com/owner/blog/commit/123" } } };
-  };
+  const entry = "content/posts/2026-10-11-hello-pages.md";
+  const repo = { files: new Map(), commits: 0 };
+  handleApi = branchApi(repo);
+  const remote = () => repo.files.get(entry);
   const first = await gh.saveEntry("/Writing/Post.md", "# Hello Pages\n\n**Markdown** body.", req);
-  assert.equal(first.path, "content/posts/2026-10-11-hello-pages.md");
-  assert.equal(cms.parseEntry(remote.content).data.title, "Hello Pages");
-  assert.ok(!cms.parseEntry(remote.content).body.includes("# Hello Pages"));
+  assert.equal(first.path, entry);
+  assert.equal(cms.parseEntry(remote().content).data.title, "Hello Pages");
+  assert.ok(!cms.parseEntry(remote().content).body.includes("# Hello Pages"));
   await gh.saveEntry("/Writing/Post.md", "# Hello Pages\n\n**Markdown** body.", req);
-  assert.equal(writes, 1);
+  assert.equal(repo.commits, 1);
   await gh.saveEntry("/Writing/Post.md", "# Hello Pages\n\nUpdated body.", req);
-  assert.equal(writes, 2);
-  remote = { content: remote.content.replace("Updated body.", "CMS edit."), sha: "external-edit" };
+  assert.equal(repo.commits, 2);
+  repo.files.set(entry, { content: remote().content.replace("Updated body.", "CMS edit."), sha: "external-edit" });
   await assert.rejects(gh.saveEntry("/Writing/Post.md", "# Hello Pages\n\nLocal edit.", req), error => error instanceof gh.SaveConflict && error.kind === "changed");
-  assert.equal(writes, 2);
+  assert.equal(repo.commits, 2);
   await assert.rejects(gh.saveEntry("/Writing/Another.md", "# Hello Pages\n\nOther body.", req), error => error instanceof gh.SaveConflict && error.kind === "exists");
-  assert.equal(writes, 2);
+  assert.equal(repo.commits, 2);
   await gh.saveEntry("/Writing/Post.md", "# Hello Pages\n\nApproved edit.", req, { overwrite: true });
-  assert.equal(writes, 3);
-  assert.equal(gh.getLink("/Writing/Post.md").sha, "saved-3");
+  assert.equal(repo.commits, 3);
+  assert.match(remote().content, /Approved edit/);
+  assert.equal(gh.getLink("/Writing/Post.md").sha, remote().sha);
 });
 
-test("unsupported collections, invalid new paths, required images and pasted images block writes", async () => {
+test("unsupported collections, invalid new paths, required images and unplaceable pasted images block writes", async () => {
   handleApi = repoApi(new Map([[".pages.yml", fixture]]));
   const { site, config } = await gh.findSite("owner/blog", "pages");
   const collection = config.collections[0], values = cms.defaultValues(collection, "Post");
@@ -138,8 +168,9 @@ test("unsupported collections, invalid new paths, required images and pasted ima
   calls.length = 0;
   await assert.rejects(save({ collection: { ...collection, unsupported: "Unsupported format" } }), /Unsupported format/);
   await assert.rejects(save({ name: "../elsewhere" }), /collection's folder/);
-  await assert.rejects(save({}, "![Pasted](assets/pic.png)"), /can't upload/);
   assert.equal(calls.length, 0);
+  // Pages collections don't say where images go yet, so a pasted image can't be uploaded.
+  await assert.rejects(save({}, "![Pasted](assets/pic.png)"), /doesn't say where .* images go/);
   const withRequiredImage = { ...collection, fields: collection.fields.map(f => f.name === "cover" ? { ...f, required: true } : f) };
   await assert.rejects(save({ collection: withRequiredImage }), /need cover/);
   assert.equal(calls.every(call => call.method === "GET"), true);
@@ -150,13 +181,10 @@ test("Pages collections without a separate title field keep the document's headi
   handleApi = repoApi(new Map([[".pages.yml", bodyConfig]]));
   const { site, config } = await gh.findSite("owner/blog", "pages");
   const collection = config.collections[0];
-  let content;
-  handleApi = ({ method, body }) => {
-    if (method === "GET") return missing;
-    content = Buffer.from(body.content, "base64").toString("utf8");
-    return { status: 201, body: { content: { sha: "body-post" }, commit: { html_url: "https://github.com/owner/blog/commit/body" } } };
-  };
-  await gh.saveEntry("/Writing/BodyOnly.md", "# Keep this heading\n\nBody", { site, collection, values: {}, name: "article", title: "Keep this heading" });
+  const repo = { files: new Map(), commits: 0 };
+  handleApi = branchApi(repo);
+  const saved = await gh.saveEntry("/Writing/BodyOnly.md", "# Keep this heading\n\nBody", { site, collection, values: {}, name: "article", title: "Keep this heading" });
+  const { content } = repo.files.get(saved.path);
   assert.match(cms.parseEntry(content).body, /# Keep this heading/);
   assert.deepEqual(cms.parseEntry(content).data, {});
 });

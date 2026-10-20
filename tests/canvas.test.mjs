@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { newBoard, newCard, screenToWorld, worldToScreen, zoomAt, endpoint, connect, deleteCards, mapBounds, mapTransform, viewportBounds, parseBoard } from "../src/canvas/model.ts";
+import { newBoard, newCard, newWebsiteCard, screenToWorld, worldToScreen, zoomAt, endpoint, connect, deleteCards, mapBounds, mapTransform, viewportBounds, parseBoard } from "../src/canvas/model.ts";
+import { websiteUrl } from "../src/canvas/websites.ts";
 import { CanvasSession } from "../src/canvas/persistence.ts";
 
 const approx = (a, b) => assert.ok(Math.abs(a - b) < 1e-7, `${a} ≠ ${b}`);
@@ -15,6 +16,35 @@ function memory() {
 }
 const text = board => JSON.stringify(board, null, 2) + "\n";
 const withCard = (board, body = "An idea") => ({ ...board, cards: [{ ...newCard({ x: -420, y: 700 }), body }] });
+
+test("website cards save, connect, and undo alongside existing idea cards", async () => {
+  const fs = memory(), session = new CanvasSession("/Bookmarks", fs);
+  await session.reload();
+  const idea = newCard({ x: 0, y: 0 });
+  const website = newWebsiteCard({ x: 400, y: 0 }, "example.com/article?q=1#part", "Research");
+  assert.equal(website.width, idea.width); assert.equal(website.height, idea.height);
+  assert.equal(website.url, "https://example.com/article?q=1#part");
+  const board = connect({ ...session.get().board, cards: [idea, website] }, idea.id, website.id);
+  session.change(board); await session.flush();
+  const reopened = new CanvasSession("/Bookmarks", fs); await reopened.reload();
+  assert.deepEqual(reopened.get().board, board);
+  const edited = { ...board, cards: [idea, { ...website, url: websiteUrl("https://example.org/") }] };
+  reopened.change(edited); reopened.undo(); assert.deepEqual(reopened.get().board, board);
+  await reopened.flush();
+});
+
+test("website addresses reject unsafe protocols and malformed persisted card types", () => {
+  assert.equal(websiteUrl("  example.com  "), "https://example.com/");
+  assert.equal(websiteUrl("http://localhost:8080/path"), "http://localhost:8080/path");
+  for (const url of ["", "javascript:alert(1)", "data:text/html,hi", "file:///tmp/a", "ftp://example.com", "https://user:secret@example.com", "not a url"]) {
+    assert.throws(() => websiteUrl(url), undefined, url);
+  }
+  const card = newWebsiteCard({ x: 0, y: 0 }, "example.com");
+  const board = { ...newBoard(), cards: [card] };
+  for (const patch of [{ url: "javascript:alert(1)" }, { url: undefined }, { url: "example.com" }, { kind: "future" }]) {
+    assert.throws(() => parseBoard({ ...board, cards: [{ ...card, ...patch }] }));
+  }
+});
 
 test("camera conversion and pointer-centered zoom work in every quadrant", () => {
   for (const zoom of [.02, .25, 1, 3]) {
