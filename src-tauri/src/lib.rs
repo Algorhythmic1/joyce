@@ -165,9 +165,25 @@ fn allow_images_from(app: tauri::AppHandle, dir: String) -> Result<(), String> {
     app.asset_protocol_scope().allow_directory(dir, true).map_err(err)
 }
 
+/// Moves a file or folder to the system trash. On macOS this goes through
+/// NSFileManager rather than the crate's default of scripting Finder: Finder
+/// insists on downloading iCloud files that are only in the cloud before it
+/// will trash them, then the script fails. NSFileManager also needs no
+/// automation permission. The cost is that Finder may not offer "Put Back".
+pub(crate) fn move_to_trash(path: impl AsRef<Path>) -> Result<(), trash::Error> {
+    #[allow(unused_mut)]
+    let mut ctx = trash::TrashContext::default();
+    #[cfg(target_os = "macos")]
+    {
+        use trash::macos::{DeleteMethod, TrashContextExtMacos};
+        ctx.set_delete_method(DeleteMethod::NsFileManager);
+    }
+    ctx.delete(path)
+}
+
 #[tauri::command]
 fn trash_path(path: String) -> Result<(), String> {
-    trash::delete(path).map_err(err)?;
+    move_to_trash(path).map_err(err)?;
     sync::nudge();
     Ok(())
 }

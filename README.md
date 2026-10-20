@@ -99,11 +99,12 @@ Joyce defaults to `https://joyce-sync.7vwvwnd56t.workers.dev` (set in `src/sync.
 
 ## Publish to a site
 
-The upload button publishes the open document as an entry on any site managed with **[Sveltia CMS](https://sveltiacms.app)** (or Decap/Netlify CMS). Those sites keep content in GitHub and describe it in an `admin/config.yml`; Joyce reads that, so nothing about a site is hard-coded.
+The upload button publishes the open document as an entry on sites managed with **[Pages CMS](https://pagescms.org)**, **[Sveltia CMS](https://sveltiacms.app)**, or Decap/Netlify CMS. Those sites keep content in GitHub and describe it in `.pages.yml` (Pages) or `admin/config.yml` (Sveltia/Decap); Joyce reads the config to build the publishing form.
 
-- **Add a site** by its GitHub repository (`owner/name` or URL). Joyce finds the CMS config anywhere in the repo, and uses its content repo and branch.
+- **Add a site** by its GitHub repository (`owner/name` or URL). Joyce finds Sveltia/Decap configs under admin or cms folders, or Pages's root `.pages.yml`. Choose a CMS explicitly when the repo has both; automatic detection checks Sveltia/Decap first. Pages publishes to that repo's default branch; Sveltia/Decap can name a different content repo and branch in their config.
 - Pick a **content type** (the CMS's folder collections, e.g. Blog or Podcast). The form is built from its fields: text, dates, toggles, numbers, choices and simple lists, with the CMS's own labels and hints. Fields Joyce can't edit (images, relations, nested objects) are kept exactly as they are.
-- File names follow the collection's template (`{{slug}}`, `ep-{{fields.episodeNumber}}`, `{{year}}-{{month}}-{{slug}}`…), and front matter is written in the CMS's field order.
+- File names follow the collection's template (`{{slug}}`, `ep-{{fields.episodeNumber}}`, `{{year}}-{{month}}-{{slug}}` for Sveltia/Decap; `{primary}`, `{fields.title}`, `{year}-{month}-{day}-{primary}.md` for Pages), and front matter is written in the CMS's field order.
+- Pages supports Markdown folder collections with YAML front matter, including grouped collections and reusable field components. `view.primary` selects the title field, and date fields use Pages's date-fns formats. Fixed files, other serialization formats, custom front matter delimiters, and collections without a Markdown body are shown as unsupported.
 - A leading `# Heading` becomes the title. Saving again updates the same entry, starting from any edits made in the CMS since. If the entry changed on GitHub since Joyce last saved it, Joyce asks before overwriting.
 - Collections with a `draft` toggle save drafts by default; Joyce warns before publishing.
 - Joyce won't create entries that would lack a required field it can't fill (like a podcast's audio upload), since that can break the site's build; create those in the CMS, and Joyce can update their text.

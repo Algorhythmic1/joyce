@@ -1,0 +1,41 @@
+media:
+  input: public/images
+  output: /images
+components:
+  summary:
+    type: text
+    label: Summary
+content:
+  - name: posts
+    label: Blog posts
+    type: collection
+    path: content/posts
+    filename: "{year}-{month}-{day}-{primary}.md"
+    fields:
+      - name: title
+        type: string
+        required: true
+      - name: date
+        type: date
+        options:
+          format: yyyy-MM-dd
+      - name: draft
+        type: boolean
+      - name: tags
+        type: string
+        list: true
+      - name: category
+        type: select
+        options:
+          values:
+            - name: news
+              label: News
+            - name: essays
+              label: Essays
+      - name: excerpt
+        component: summary
+        label: Description
+      - name: cover
+        type: image
+      - name: body
+        type: rich-text

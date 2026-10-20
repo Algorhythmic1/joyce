@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import * as gh from "../integrations/github";
 import type { DeviceCode, Link, Site } from "../integrations/github";
+import { cmsForPath, cmsName, type CmsKind } from "../integrations/cms";
 import {
-  defaultValues, draftField, editable, entryName, entryPath, missingRequired, unfillable, valuesFrom,
+  defaultValues, draftField, editable, entryName, entryPath, missingRequired, titleField, unfillable, valuesFrom,
   type Collection, type Field, type SiteConfig, type Values,
 } from "../integrations/sveltia";
 
@@ -130,13 +131,14 @@ function Sites({ localPath, getText }: Props) {
 
 function AddSite({ onAdded, onCancel }: { onAdded: (s: Site) => void; onCancel?: () => void }) {
   const [input, setInput] = useState("");
+  const [cms, setCms] = useState<CmsKind | "">("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const add = async () => {
     setBusy(true);
     setError(null);
     try {
-      onAdded(await gh.addSite(input));
+      onAdded(await gh.addSite(input, cms || undefined));
     } catch (e) {
       setError(String(e instanceof Error ? e.message : e));
     } finally {
@@ -146,7 +148,7 @@ function AddSite({ onAdded, onCancel }: { onAdded: (s: Site) => void; onCancel?:
   return (
     <section>
       <p className="hint">
-        Publish to any site managed with <strong>Sveltia CMS</strong> (or Decap CMS). Joyce reads the site's CMS config to
+        Publish to a site managed with <strong>Pages CMS</strong>, <strong>Sveltia CMS</strong>, or Decap/Netlify CMS. Joyce reads the site's CMS config to
         learn its content types and fields.
       </p>
       <label className="field">
@@ -159,6 +161,14 @@ function AddSite({ onAdded, onCancel }: { onAdded: (s: Site) => void; onCancel?:
           placeholder="owner/name or https://github.com/owner/name"
           spellCheck={false}
         />
+      </label>
+      <label className="field">
+        <span>CMS</span>
+        <select value={cms} onChange={(e) => setCms(e.currentTarget.value as CmsKind | "")}>
+          <option value="">Detect automatically</option>
+          <option value="pages">Pages CMS</option>
+          <option value="sveltia">Sveltia / Decap / Netlify CMS</option>
+        </select>
       </label>
       <div className="row">
         <button className="primary small" disabled={busy || !input.trim()} onClick={add}>
@@ -207,7 +217,11 @@ function SiteEntry({ site, localPath, getText, link }: { site: Site; localPath: 
   const usable = config.collections.filter((c) => !c.unsupported);
   const collection = usable.find((c) => c.name === collectionName) ?? usable[0];
   if (!collection) {
-    return <p className="hint">{site.name} has no collections Joyce can publish Markdown into.</p>;
+    return <>
+      <p className="hint">{site.name} has no collections Joyce can publish Markdown into.</p>
+      {config.collections.map((c) => <p className="hint" key={c.name}>{c.label}: {c.unsupported}</p>)}
+      <button className="link-button" onClick={() => gh.removeSite(site.id)}>Remove this site from Joyce</button>
+    </>;
   }
   const others = config.collections.filter((c) => c.unsupported);
 
@@ -237,7 +251,7 @@ function SiteEntry({ site, localPath, getText, link }: { site: Site; localPath: 
         link={linkedHere?.collection === collection.name ? linkedHere : undefined}
       />
       <p className="hint site-footer">
-        {site.repo} · {site.branch}
+        {cmsName(site.cms ?? cmsForPath(site.configPath))} · {site.repo} · {site.branch}
         {" · "}
         <button className="link-button" onClick={() => gh.removeSite(site.id)}>Remove site</button>
       </p>
@@ -255,7 +269,7 @@ function EntryForm(props: { site: Site; collection: Collection; localPath: strin
     const base = defaultValues(collection, title ?? "");
     const v = link ? { ...base, ...link.values } : base;
     // The document's own heading wins over a remembered title.
-    return title && collection.fields.some((f) => f.name === collection.identifier) ? { ...v, [collection.identifier]: title } : v;
+    return title && titleField(collection) ? { ...v, [collection.identifier]: title } : v;
   });
   const [name, setName] = useState(() => entryName(collection, values));
   const [nameTouched, setNameTouched] = useState(false);
@@ -269,7 +283,7 @@ function EntryForm(props: { site: Site; collection: Collection; localPath: strin
       .then((entry) => {
         if (!live || !entry) return;
         const fromSite = valuesFrom(collection, entry.data);
-        setValues((v) => ({ ...v, ...fromSite, ...(title ? { [collection.identifier]: title } : {}) }));
+        setValues((v) => ({ ...v, ...fromSite, ...(title && titleField(collection) ? { [collection.identifier]: title } : {}) }));
       })
       .catch(() => {});
     return () => {
@@ -559,7 +573,7 @@ function SignIn(props: { auth: Auth; setAuth: (a: Auth) => void; onSignedIn: () 
   return (
     <section className="sign-in">
       <p className="hint">
-        Sites managed with Sveltia CMS keep their content on GitHub. Sign in with an account that can push to the site's
+        Sites managed with Pages CMS, Sveltia, or Decap keep their content on GitHub. Sign in with an account that can push to the site's
         repository. The token is kept in your system's secure storage.
       </p>
       {cliAvailable && <button className="primary" onClick={cliSignIn}>Use my GitHub CLI account</button>}

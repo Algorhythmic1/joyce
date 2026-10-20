@@ -1,4 +1,5 @@
 import { parse as parseYaml, parseDocument, stringify } from "yaml";
+import { format as formatDateFns, parse as parseDateFns, isValid as validDate } from "date-fns";
 
 /*
  * Reads a Sveltia CMS (or Decap/Netlify CMS) `config.yml` and turns its folder
@@ -32,8 +33,10 @@ export interface Field {
   hint?: string;
   options?: { label: string; value: string }[];
   multiple?: boolean;
-  /** Moment-style output format for dates, e.g. "YYYY-MM-DD". */
+  /** Output format for dates: Moment tokens by default, or date-fns for Pages. */
   format?: string;
+  /** Pages CMS uses date-fns tokens rather than Moment tokens. */
+  formatStyle?: "date-fns";
   valueType?: "int" | "float";
 }
 
@@ -180,6 +183,9 @@ export const slugify = (s: string) =>
 /** Fields the publish form shows (others are kept as they are, or get their defaults). */
 export const editable = (f: Field) => !["body", "hidden", "other"].includes(f.kind);
 
+/** A heading can populate a text title, but can't replace dates, lists or the body. */
+export const titleField = (c: Collection) => c.fields.find((f) => f.name === c.identifier && (f.kind === "string" || f.kind === "text"));
+
 /** The collection's draft switch, if it has one (a boolean field named "draft"). */
 export const draftField = (c: Collection) => c.fields.find((f) => f.name === "draft" && f.kind === "boolean");
 
@@ -191,10 +197,10 @@ export function defaultValues(c: Collection, title: string, now = new Date()): V
     const d = f.default;
     switch (f.kind) {
       case "date":
-        v[f.name] = typeof d === "string" && d !== "{{now}}" ? d.slice(0, 10) : f.required ? ymd(now) : "";
+        v[f.name] = typeof d === "string" && d !== "{{now}}" ? d.slice(0, 10) : f.required || d === "{{now}}" ? ymd(now) : "";
         break;
       case "datetime":
-        v[f.name] = typeof d === "string" && d !== "{{now}}" ? d.slice(0, 16) : f.required ? ymdhm(now) : "";
+        v[f.name] = typeof d === "string" && d !== "{{now}}" ? d.slice(0, 16) : f.required || d === "{{now}}" ? ymdhm(now) : "";
         break;
       case "boolean":
         v[f.name] = f.name === "draft" ? true : d === true;
@@ -212,7 +218,7 @@ export function defaultValues(c: Collection, title: string, now = new Date()): V
         v[f.name] = d !== undefined ? String(d) : "";
     }
   }
-  if (c.fields.some((f) => f.name === c.identifier)) v[c.identifier] = title;
+  if (titleField(c)) v[c.identifier] = title;
   return v;
 }
 
@@ -222,6 +228,13 @@ export function valuesFrom(c: Collection, data: Raw): Values {
   for (const f of c.fields) {
     if (!editable(f) || !(f.name in data)) continue;
     const x = data[f.name];
+    if ((f.kind === "date" || f.kind === "datetime") && f.formatStyle === "date-fns" && f.format && typeof x === "string" && x) {
+      const d = parseDateFns(x, f.format, new Date());
+      if (validDate(d)) {
+        v[f.name] = f.kind === "date" ? ymd(d) : ymdhm(d);
+        continue;
+      }
+    }
     switch (f.kind) {
       case "date":
         v[f.name] = x instanceof Date ? ymd(x) : String(x ?? "").slice(0, 10);
@@ -250,6 +263,7 @@ export function valuesFrom(c: Collection, data: Raw): Values {
 function formatDate(f: Field, value: string): string {
   if (!f.format) return f.kind === "date" ? value.slice(0, 10) : new Date(value).toISOString();
   const d = new Date(f.kind === "date" ? `${value.slice(0, 10)}T00:00` : value);
+  if (f.formatStyle === "date-fns") return formatDateFns(d, f.format);
   const tokens: Record<string, string> = {
     YYYY: String(d.getFullYear()),
     YY: String(d.getFullYear()).slice(-2),

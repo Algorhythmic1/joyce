@@ -2,14 +2,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { isTauri, slugify } from "../fs";
 import { FolderStore, dropKeys, rekey, toRel } from "../folderState";
 import {
-  buildEntry, entryPath, looksLikeCmsConfig, parseConfig, parseEntry, unfillable, type Collection, type SiteConfig, type Values,
+  buildEntry, entryPath, parseEntry, titleField, unfillable, type Collection, type SiteConfig, type Values,
 } from "./sveltia";
+import { cmsForPath, readCmsConfig, type CmsKind } from "./cms";
 
 /*
- * Publishing documents as entries on sites managed with Sveltia CMS (or
- * Decap/Netlify CMS): sites keep their content in GitHub, and describe their
- * content types in an `admin/config.yml`. Joyce reads that config, so any such
- * site works without set-up beyond naming its repository.
+ * Publishing Markdown into GitHub repositories described by Sveltia/Decap
+ * config.yml or Pages CMS .pages.yml, using the same forms and save safeguards.
  */
 
 /** A site Joyce can publish to. */
@@ -22,6 +21,8 @@ export interface Site {
   /** Where the CMS config lives (it can be a different repo in principle). */
   configRepo: string;
   configPath: string;
+  /** Older sites infer their CMS from configPath. */
+  cms?: CmsKind;
   siteUrl?: string;
 }
 
@@ -256,9 +257,9 @@ export function parseRepo(input: string): string | null {
 /**
  * Finds a repository's CMS config. Sveltia and Decap configs are usually at
  * `admin/config.yml` under the folder the site serves (`public/`, `static/`…),
- * but can be anywhere, so look through the whole tree.
+ * so look through the tree. Pages CMS uses `.pages.yml` at the repository root.
  */
-export async function findSite(input: string): Promise<{ site: Site; config: SiteConfig }> {
+export async function findSite(input: string, cms?: CmsKind): Promise<{ site: Site; config: SiteConfig }> {
   const named = parseRepo(input);
   if (!named) throw new Error("Enter a GitHub repository, like owner/name or its github.com address.");
   const r = await api("GET", `/repos/${named}`);
@@ -267,31 +268,45 @@ export async function findSite(input: string): Promise<{ site: Site; config: Sit
   const repo: string = r.body.full_name; // Follows renames.
   const branch: string = r.body.default_branch;
 
-  const tree = await api("GET", `/repos/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`);
-  if (tree.status !== 200) throw apiError(tree, "Reading the repository's files");
-  const candidates = (tree.body.tree as { path: string; type: string }[])
-    .filter((t) => t.type === "blob" && /(^|\/)config\.ya?ml$/.test(t.path) && /(^|\/)(admin|cms)(\/|$)/i.test(t.path))
-    .filter((t) => !/(^|\/)node_modules\//.test(t.path))
-    .map((t) => t.path)
-    .sort((a, b) => a.split("/").length - b.split("/").length);
+  const candidates: string[] = [];
+  if (cms !== "pages") {
+    const tree = await api("GET", `/repos/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`);
+    if (tree.status !== 200) throw apiError(tree, "Reading the repository's files");
+    candidates.push(...(tree.body.tree as { path: string; type: string }[])
+      .filter((t) => t.type === "blob" && /(^|\/)config\.ya?ml$/.test(t.path) && /(^|\/)(admin|cms)(\/|$)/i.test(t.path))
+      .filter((t) => !/(^|\/)node_modules\//.test(t.path))
+      .map((t) => t.path)
+      .sort((a, b) => a.split("/").length - b.split("/").length).slice(0, 8));
+  }
+  // Pages config lives at the repository root. Check it even if the tree was truncated.
+  if (cms !== "sveltia") candidates.push(".pages.yml");
 
-  for (const path of candidates.slice(0, 8)) {
+  for (const path of candidates) {
     const file = await getFile(repo, branch, path);
-    if (!file || !looksLikeCmsConfig(file.content)) continue;
-    const config = parseConfig(file.content);
+    if (!file) continue;
+    const kind = cmsForPath(path);
+    let config: SiteConfig;
+    try {
+      config = readCmsConfig(file.content, kind);
+    } catch (e) {
+      if (kind === "pages") throw new Error(`Can't read .pages.yml: ${e instanceof Error ? e.message : e}`);
+      continue;
+    }
     const contentRepo = config.repo ?? repo;
     const site: Site = {
-      id: slugify(contentRepo),
+      id: `${slugify(contentRepo)}${kind === "pages" ? "-pages" : ""}`,
       name: siteName(config, contentRepo),
       repo: contentRepo,
       branch: config.branch ?? branch,
       configRepo: repo,
       configPath: path,
+      cms: kind,
       siteUrl: config.siteUrl,
     };
     return { site, config };
   }
-  throw new Error(`No Sveltia or Decap CMS config (admin/config.yml) found in ${repo}.`);
+  const expected = cms === "pages" ? "Pages CMS config (.pages.yml)" : cms === "sveltia" ? "Sveltia or Decap CMS config (admin/config.yml)" : "CMS config (admin/config.yml or .pages.yml)";
+  throw new Error(`No ${expected} found in ${repo}.`);
 }
 
 function siteName(config: SiteConfig, repo: string) {
@@ -305,8 +320,8 @@ function siteName(config: SiteConfig, repo: string) {
   return repo.split("/")[1];
 }
 
-export async function addSite(input: string): Promise<Site> {
-  const { site, config } = await findSite(input);
+export async function addSite(input: string, cms?: CmsKind): Promise<Site> {
+  const { site, config } = await findSite(input, cms);
   configCache.set(site.id, config);
   updateSite(site);
   return site;
@@ -318,23 +333,24 @@ const configCache = new Map<string, SiteConfig>();
 export async function loadSiteConfig(site: Site): Promise<SiteConfig> {
   if (!site.configPath) {
     // Carried over from before configs were read; find it now.
-    const found = await findSite(site.configRepo || site.repo);
+    const found = await findSite(site.configRepo || site.repo, site.cms);
     updateSite({ ...found.site, id: site.id, name: site.name === "Bickerstaff Media" ? found.site.name : site.name });
     configCache.set(site.id, found.config);
     return found.config;
   }
+  let file: Awaited<ReturnType<typeof getFile>>;
   try {
-    const file = await getFile(site.configRepo, site.branch, site.configPath);
-    if (!file) throw new Error(`The CMS config at ${site.configPath} is gone.`);
-    const config = parseConfig(file.content);
-    configCache.set(site.id, config);
-    return config;
+    file = await getFile(site.configRepo, site.branch, site.configPath);
   } catch (e) {
     // Offline or briefly unavailable: the last config read still describes the site.
     const cached = configCache.get(site.id);
     if (cached) return cached;
     throw e;
   }
+  if (!file) throw new Error(`The CMS config at ${site.configPath} is gone.`);
+  const config = readCmsConfig(file.content, site.cms ?? cmsForPath(site.configPath));
+  configCache.set(site.id, config);
+  return config;
 }
 
 // --- Saving ------------------------------------------------------------------------
@@ -358,7 +374,8 @@ export interface SaveRequest {
 
 export async function saveEntry(localPath: string, text: string, req: SaveRequest, { overwrite = false } = {}): Promise<Link> {
   const { site, collection, values } = req;
-  const { body } = collection.fields.some((f) => f.name === collection.identifier) ? splitTitle(text) : { body: text };
+  if (collection.unsupported) throw new Error(collection.unsupported);
+  const { body } = titleField(collection) ? splitTitle(text) : { body: text };
 
   // Local images would land in the repo as links to files that aren't there, which
   // can fail the site's build. Until Joyce uploads images, don't send them.
@@ -374,6 +391,9 @@ export async function saveEntry(localPath: string, text: string, req: SaveReques
   // A link to another site, collection or branch doesn't apply here.
   const link =
     stored && stored.site === site.id && stored.collection === collection.name && stored.branch === site.branch ? stored : undefined;
+  if (!link?.path && (!req.name || req.name.startsWith("/") || req.name.includes("\\") || req.name.split("/").some((p) => !p || p === "." || p === ".."))) {
+    throw new Error("Enter a file name inside the collection's folder.");
+  }
   const path = link?.path ?? entryPath(collection, req.name);
   const remote = await getFile(site.repo, site.branch, path);
   const missing = unfillable(collection, remote ? parseEntry(remote.content).data : undefined);

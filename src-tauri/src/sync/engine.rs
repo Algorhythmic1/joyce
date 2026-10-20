@@ -347,7 +347,7 @@ impl Engine {
                 state.files.remove(&path);
                 drop(state);
                 if disk.is_some() {
-                    if trash::delete(&abs).is_err() {
+                    if crate::move_to_trash(&abs).is_err() {
                         let _ = std::fs::remove_file(&abs);
                     }
                     self.prune_empty_dirs(&abs);
