@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { parsePagesConfig, looksLikePagesConfig } from "../src/integrations/pages.ts";
-import { parseConfig, defaultValues, entryName, entryPath, buildEntry, parseEntry, unfillable, valuesFrom, missingRequired } from "../src/integrations/sveltia.ts";
+import { parseConfig, defaultValues, entryName, entryPath, buildEntry, parseEntry, unfillable, valuesFrom, missingRequired, mediaLocation } from "../src/integrations/sveltia.ts";
 
 const fixture = readFileSync(new URL("fixtures/pages.yml", import.meta.url), "utf8");
 const now = new Date(2026, 9, 11, 14, 35, 7);
@@ -18,7 +18,7 @@ test("Pages config maps fields into the existing entry form with optional fields
   assert.deepEqual(c.fields.map(f => [f.name, f.kind, f.required]), [
     ["title", "string", true], ["date", "date", false], ["draft", "boolean", false],
     ["tags", "list", false], ["category", "select", false], ["excerpt", "text", false],
-    ["cover", "other", false], ["body", "body", false],
+    ["cover", "image", false], ["body", "body", false],
   ]);
   assert.equal(c.fields.find(f => f.name === "excerpt").label, "Description");
   assert.deepEqual(c.fields.find(f => f.name === "category").options, [
@@ -30,6 +30,47 @@ test("Pages config maps fields into the existing entry form with optional fields
   assert.equal(entryPath(c, entryName(c, values, now)), "content/posts/2026-10-11-cafe-conversation.md");
   assert.deepEqual(unfillable(c), []);
   assert.deepEqual(missingRequired(c, { ...values, title: "" }), ["title"]);
+});
+
+test("media sources decide where pasted and chosen images go, linked the way Pages links them", () => {
+  const where = (c, field) => mediaLocation(c, "content/posts/hello.md", {}, field && c.fields.find(f => f.name === field));
+  // A folder name is linked as "/name".
+  const short = collection("", "    - { name: cover, type: image }\n    - { name: body, type: rich-text }");
+  assert.equal(short.media, undefined);
+  const named = parsePagesConfig("media: public/media/\ncontent:\n- { name: posts, type: collection, path: content/posts, fields: [{ name: body, type: rich-text }] }\n").collections[0];
+  assert.deepEqual(where(named), { folder: "public/media", prefix: "/public/media/" });
+  // The fixture's single source: committed under public/images, linked as /images.
+  const fixed = parsePagesConfig(fixture).collections[0];
+  assert.deepEqual(where(fixed), { folder: "public/images", prefix: "/images/" });
+  assert.deepEqual(where(fixed, "cover"), { folder: "public/images", prefix: "/images/" });
+
+  const sources = `media:
+- { name: images, input: /static/images/, output: / }
+- { name: heroes, input: static/heroes, output: /heroes }
+content:
+- name: posts
+  type: collection
+  path: content/posts
+  fields:
+  - { name: hero, type: image, options: { media: heroes } }
+  - { name: thumb, type: image, options: { path: static/images/thumbs } }
+  - { name: outside, type: image, options: { path: elsewhere } }
+  - { name: gallery, type: image, options: { multiple: { max: 6 } } }
+  - { name: off, type: image, options: { media: false } }
+  - { name: lost, type: image, options: { media: nowhere } }
+  - { name: body, type: rich-text, options: { media: heroes } }
+`;
+  const c = parsePagesConfig(sources).collections[0];
+  assert.deepEqual(c.fields.map(f => [f.name, f.kind]), [
+    ["hero", "image"], ["thumb", "image"], ["outside", "image"], ["gallery", "other"], ["off", "other"], ["lost", "other"], ["body", "body"],
+  ]);
+  // The body's own media source takes pasted images; each image field uses its own.
+  assert.deepEqual(where(c), { folder: "static/heroes", prefix: "/heroes/" });
+  assert.deepEqual(where(c, "hero"), { folder: "static/heroes", prefix: "/heroes/" });
+  // A path inside the source keeps its place under the output; output "/" links from the root.
+  assert.deepEqual(where(c, "thumb"), { folder: "static/images/thumbs", prefix: "/thumbs/" });
+  // A path outside the source can't be linked, so the source's own folder is used.
+  assert.deepEqual(where(c, "outside"), { folder: "static/images", prefix: "/" });
 });
 
 test("Pages filenames include their extension and honor primary, aliases, field and time tokens", () => {
@@ -56,7 +97,7 @@ test("new entries serialize typed values and a Markdown body in field order", ()
   assert.deepEqual(Object.keys(parsed.data), ["title", "date", "draft", "tags", "category", "excerpt"]);
 });
 
-test("image, object, hidden, readonly and unknown metadata survive an update", () => {
+test("image, object, hidden, readonly and unknown metadata survive an update when there's no media to upload to", () => {
   const c = collection("", `    - { name: title, type: string }\n    - { name: cover, type: image, required: true }\n    - { name: seo, type: object }\n    - { name: locked, type: string, readonly: true }\n    - { name: private, type: string, hidden: true, default: secret }\n    - { name: body, type: rich-text }`);
   assert.deepEqual(unfillable(c).map(f => f.name), ["cover"]);
   const old = "---\ntitle: Old\ncover: /images/photo.png\nseo:\n  description: Keep this\nlocked: Fixed\nprivate: Original\nextra: Keep me\n---\n\nOld body\n";

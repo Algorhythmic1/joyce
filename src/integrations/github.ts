@@ -208,6 +208,21 @@ export function imagesToUpload(body: string, collection: Collection, values: Val
   return keys.size;
 }
 
+/**
+ * The repo folders a save would upload images to, or null for images with
+ * nowhere to go (the CMS config doesn't say).
+ */
+export function imageFolders(body: string, collection: Collection, entry: string, values: Values): (string | null)[] {
+  const out = new Set<string | null>();
+  const where = mediaLocation(collection, entry, values);
+  if (localImages(body, where?.prefix).length) out.add(where?.folder ?? null);
+  for (const choice of localImageChoices(collection, values)) {
+    const field = collection.fields.find((f) => f.name === choice.field);
+    out.add(mediaLocation(collection, entry, values, field)?.folder ?? null);
+  }
+  return [...out];
+}
+
 // --- GitHub API -----------------------------------------------------------------
 
 interface ApiResponse {
@@ -552,23 +567,27 @@ async function trySave(localPath: string, text: string, req: SaveRequest, overwr
  */
 async function placeImages(site: Site, collection: Collection, entry: string, values: Values, localPath: string, body: string) {
   const uploads: CommitFile[] = [];
-  const where = mediaLocation(collection, entry, values);
-  const refs = localImages(body, where?.prefix);
+  const bodyWhere = mediaLocation(collection, entry, values);
+  const refs = localImages(body, bodyWhere?.prefix);
   const choices = localImageChoices(collection, values);
   if (!refs.length && !choices.length) return { body, values, uploads };
-  if (!where) {
-    throw new Error(
-      `${site.name}'s CMS config doesn't say where ${collection.label.toLowerCase()} images go (its media_folder), ` +
-        "so Joyce can't upload the images in this. Remove them, or use images hosted online.",
-    );
-  }
 
-  const existing = await listFolder(site.repo, site.branch, where.folder);
-  // The same file on disk (a pasted image also chosen as the hero) goes up once.
+  // Files already in each media folder (an image field can have its own).
+  const folders = new Map<string, Map<string, string>>();
+  // The same file on disk (a pasted image also chosen as the hero) goes up once per folder.
   const byFile = new Map<string, string>();
-  const place = async (ref: string) => {
+  const place = async (ref: string, where: { folder: string; prefix: string } | null) => {
+    if (!where) {
+      throw new Error(
+        `${site.name}'s CMS config doesn't say where ${collection.label.toLowerCase()} images go (its media folder), ` +
+          "so Joyce can't upload the images in this. Remove them, or use images hosted online.",
+      );
+    }
+    let existing = folders.get(where.folder);
+    if (!existing) folders.set(where.folder, (existing = await listFolder(site.repo, site.branch, where.folder)));
     const abs = resolveDocImage(localPath, ref);
-    const cached = abs ? byFile.get(abs) : undefined;
+    const key = abs && `${where.folder}\0${abs}`;
+    const cached = key ? byFile.get(key) : undefined;
     if (cached) return cached;
     let base64: string;
     try {
@@ -584,14 +603,17 @@ async function placeImages(site: Site, collection: Collection, entry: string, va
       existing.set(assigned.name, sha);
     }
     const pub = `${where.prefix}${assigned.name}`;
-    if (abs) byFile.set(abs, pub);
+    if (key) byFile.set(key, pub);
     return pub;
   };
 
   const placed = new Map<string, string>();
-  for (const ref of refs) placed.set(ref, await place(ref));
+  for (const ref of refs) placed.set(ref, await place(ref, bodyWhere));
   const next = { ...values };
-  for (const choice of choices) next[choice.field] = await place(choice.local);
+  for (const choice of choices) {
+    const field = collection.fields.find((f) => f.name === choice.field);
+    next[choice.field] = await place(choice.local, mediaLocation(collection, entry, values, field));
+  }
   return {
     body: body.replace(IMAGE, (m, open: string, ref: string, close: string) => (placed.has(ref) ? `${open}${placed.get(ref)}${close}` : m)),
     values: next,

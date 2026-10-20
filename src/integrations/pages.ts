@@ -1,5 +1,5 @@
 import { parse as parseYaml } from "yaml";
-import type { Collection, Field, SiteConfig } from "./sveltia";
+import type { Collection, Field, Media, SiteConfig } from "./sveltia";
 
 /* Pages CMS describes repo content in .pages.yml. Normalize its schema into
  * the same collections used by Joyce's entry form and GitHub publisher. */
@@ -7,6 +7,47 @@ type Raw = Record<string, unknown>;
 const object = (v: unknown): Raw => v && typeof v === "object" && !Array.isArray(v) ? v as Raw : {};
 const str = (v: unknown) => typeof v === "string" ? v : undefined;
 const records = (v: unknown): Raw[] => Array.isArray(v) ? v.map(object) : [];
+
+/** A Pages media source: files are committed under `input`, and content links to them under `output`. */
+interface MediaSource {
+  name: string;
+  input: string;
+  output: string;
+}
+
+/**
+ * The config's `media`, as Pages CMS reads it: a folder name (linked as "/name"),
+ * one source, or a list of named sources. The first is the default.
+ */
+function mediaSources(raw: unknown): MediaSource[] {
+  if (typeof raw === "string") {
+    const input = raw.replace(/^\/+|\/+$/g, "");
+    return [{ name: "default", input, output: `/${input}` }];
+  }
+  const list = Array.isArray(raw) ? records(raw) : raw && typeof raw === "object" ? [{ name: "default", ...object(raw) }] : [];
+  return list.flatMap((m) => {
+    const input = str(m.input), output = str(m.output);
+    if (input === undefined || output === undefined) return [];
+    return [{ name: str(m.name) ?? "", input: input.replace(/^\/+|\/+$/g, ""), output: output === "/" ? "/" : output.replace(/\/+$/, "") }];
+  });
+}
+
+/**
+ * Where a field's uploads go. `options.media` names a source (the first if
+ * unset; false for none). An image field's `options.path` is a folder inside
+ * that source, and is linked the way Pages links it: its input prefix swapped
+ * for the output one.
+ */
+function fieldMedia(options: Raw, sources: MediaSource[]): Media | undefined {
+  if (options.media === false) return undefined;
+  const source = typeof options.media === "string" ? sources.find((m) => m.name === options.media) : sources[0];
+  if (!source) return undefined;
+  const { input, output } = source;
+  const path = (str(options.path) ?? "").replace(/^\/+|\/+$/g, "");
+  const inside = path && (!input || path === input || path.startsWith(`${input}/`));
+  const rest = inside ? (input ? path.slice(input.length) : `/${path}`) : "";
+  return { folder: `/${inside ? path : input}`, publicFolder: `${output === "/" ? "" : output}${rest}` || "/" };
+}
 
 function resolveField(raw: Raw, components: Raw, seen = new Set<string>()): Raw {
   const name = str(raw.component);
@@ -17,7 +58,7 @@ function resolveField(raw: Raw, components: Raw, seen = new Set<string>()): Raw 
   return { ...base, ...raw, type: base.type, options: { ...object(base.options), ...object(raw.options) } };
 }
 
-function parseField(raw: Raw): Field {
+function parseField(raw: Raw, sources: MediaSource[]): Field {
   const name = String(raw.name);
   const type = str(raw.type) ?? "unknown";
   const options = object(raw.options);
@@ -51,6 +92,16 @@ function parseField(raw: Raw): Field {
         f.formatStyle = "date-fns";
         f.default = raw.default ?? "{{now}}";
         break;
+      case "image": {
+        // One image, uploaded the way Pages would. Several stay with the CMS, as do
+        // images with nowhere to upload to (no media, or a source that isn't there).
+        const media = fieldMedia(options, sources);
+        if (!options.multiple && media) {
+          f.kind = "image";
+          f.media = media;
+        }
+        break;
+      }
       case "select":
         if (Array.isArray(options.values)) {
           f.kind = "select";
@@ -75,7 +126,7 @@ function parseField(raw: Raw): Field {
   return f;
 }
 
-function parseCollection(raw: Raw, components: Raw): Collection | null {
+function parseCollection(raw: Raw, components: Raw, sources: MediaSource[]): Collection | null {
   if (!str(raw.name)) return null;
   const fields = records(raw.fields).filter((f) => str(f.name)).map((f) => resolveField(f, components));
   const filename = str(raw.filename) ?? str(object(raw.filename).template) ?? "{year}-{month}-{day}-{primary}.md";
@@ -91,8 +142,11 @@ function parseCollection(raw: Raw, components: Raw): Collection | null {
     // Pages uses single braces; {primary} and {slug} both refer to view.primary.
     slug: template.replace(/\{([^{}]+)\}/g, (_, token: string) => `{{${token === "primary" ? "slug" : token}}}`),
     identifier,
-    fields: fields.map(parseField),
+    fields: fields.map((f) => parseField(f, sources)),
   };
+  // Images pasted into the body go where the body field's own uploads would.
+  const body = fields.find((_, i) => c.fields[i].kind === "body");
+  c.media = fieldMedia(body ? object(body.options) : {}, sources);
   const format = str(raw.format) ?? "yaml-frontmatter";
   const delimiters = raw.delimiters;
   if (raw.type !== "collection") c.unsupported = "It's a fixed file, not a folder of entries.";
@@ -127,10 +181,11 @@ export function parsePagesConfig(text: string): SiteConfig {
   const raw = object(parseYaml(text));
   if (!Array.isArray(raw.content)) throw new Error("The Pages CMS config must define a content list.");
   const components = object(raw.components);
+  const sources = mediaSources(raw.media);
   const flatten = (entries: unknown): Raw[] => records(entries).flatMap((entry) =>
     entry.type === "group" ? flatten(entry.items) : [entry],
   );
   return {
-    collections: flatten(raw.content).map((entry) => parseCollection(entry, components)).filter((c): c is Collection => c !== null),
+    collections: flatten(raw.content).map((entry) => parseCollection(entry, components, sources)).filter((c): c is Collection => c !== null),
   };
 }

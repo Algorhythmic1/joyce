@@ -8,7 +8,7 @@ import { createServer } from "vite";
 // This exercises discovery, persistence and saves without a token or live writes.
 let server, gh, state, cms;
 let handleApi;
-const disk = new Map(), memory = new Map();
+const disk = new Map(), memory = new Map(), pictures = new Map();
 const calls = [];
 const fixture = readFileSync(new URL("fixtures/pages.yml", import.meta.url), "utf8");
 const legacy = "backend: { name: github, repo: owner/blog, branch: publishing }\ncollections:\n- name: posts\n  folder: posts\n  fields:\n  - { name: title, widget: string }\n  - { name: body, widget: markdown }\n";
@@ -26,6 +26,10 @@ before(async () => {
         return disk.get(args.path);
       }
       if (command === "write_file") { disk.set(args.path, args.contents); return; }
+      if (command === "read_image") {
+        if (!pictures.has(args.path)) throw new Error("Missing");
+        return pictures.get(args.path);
+      }
       if (command === "github_api") { calls.push(args); return handleApi(args); }
       throw new Error(`Unexpected desktop command: ${command}`);
     } },
@@ -61,10 +65,19 @@ function branchApi(repo) {
     if (method === "GET" && route.startsWith("/repos/owner/blog/contents/")) {
       const name = decodeURIComponent(route.slice("/repos/owner/blog/contents/".length));
       const file = repo.files.get(name);
-      return file ? encoded(file.content, file.sha) : missing;
+      if (file) return encoded(file.content, file.sha);
+      // A folder: list the files directly in it.
+      const inside = [...repo.files].filter(([p]) => p.startsWith(`${name}/`) && !p.slice(name.length + 1).includes("/"));
+      return inside.length ? { status: 200, body: inside.map(([p, f]) => ({ name: p.split("/").pop(), sha: f.sha, type: "file" })) } : missing;
     }
     if (method === "GET" && route === "/repos/owner/blog/git/ref/heads/main") return { status: 200, body: { object: { sha: `head-${repo.commits}` } } };
     if (method === "GET" && route === `/repos/owner/blog/git/commits/head-${repo.commits}`) return { status: 200, body: { tree: { sha: `tree-${repo.commits}` } } };
+    if (method === "POST" && route === "/repos/owner/blog/git/blobs") {
+      assert.equal(body.encoding, "base64");
+      const sha = `blob-${repo.blobs.size + 1}`;
+      repo.blobs.set(sha, Buffer.from(body.content, "base64").toString("utf8"));
+      return { status: 201, body: { sha } };
+    }
     if (method === "POST" && route === "/repos/owner/blog/git/trees") {
       assert.equal(body.base_tree, `tree-${repo.commits}`);
       repo.pending = body.tree;
@@ -76,7 +89,10 @@ function branchApi(repo) {
     }
     if (method === "PATCH" && route === "/repos/owner/blog/git/refs/heads/main") {
       assert.equal(body.force, false);
-      for (const f of repo.pending) repo.files.set(f.path, { content: f.content, sha: gitSha(f.content) });
+      for (const f of repo.pending) {
+        const content = f.content ?? repo.blobs.get(f.sha);
+        repo.files.set(f.path, { content, sha: gitSha(content) });
+      }
       repo.commits++;
       return { status: 200, body: {} };
     }
@@ -137,7 +153,7 @@ test("Pages saves create and update entries, skip identical content and refuse e
   const name = cms.entryName(collection, values, new Date(2026, 9, 11));
   const req = { site, collection, values, name, title: "Hello Pages" };
   const entry = "content/posts/2026-10-11-hello-pages.md";
-  const repo = { files: new Map(), commits: 0 };
+  const repo = { files: new Map(), blobs: new Map(), commits: 0 };
   handleApi = branchApi(repo);
   const remote = () => repo.files.get(entry);
   const first = await gh.saveEntry("/Writing/Post.md", "# Hello Pages\n\n**Markdown** body.", req);
@@ -169,9 +185,10 @@ test("unsupported collections, invalid new paths, required images and unplaceabl
   await assert.rejects(save({ collection: { ...collection, unsupported: "Unsupported format" } }), /Unsupported format/);
   await assert.rejects(save({ name: "../elsewhere" }), /collection's folder/);
   assert.equal(calls.length, 0);
-  // Pages collections don't say where images go yet, so a pasted image can't be uploaded.
-  await assert.rejects(save({}, "![Pasted](assets/pic.png)"), /doesn't say where .* images go/);
-  const withRequiredImage = { ...collection, fields: collection.fields.map(f => f.name === "cover" ? { ...f, required: true } : f) };
+  // Without a media source, a pasted image has nowhere to go.
+  await assert.rejects(save({ collection: { ...collection, media: undefined } }, "![Pasted](assets/pic.png)"), /doesn't say where .* images go/);
+  // A required image Joyce can't upload (e.g. a gallery) has to be set in the CMS first.
+  const withRequiredImage = { ...collection, fields: collection.fields.map(f => f.name === "cover" ? { ...f, kind: "other", required: true } : f) };
   await assert.rejects(save({ collection: withRequiredImage }), /need cover/);
   assert.equal(calls.every(call => call.method === "GET"), true);
 });
@@ -181,10 +198,46 @@ test("Pages collections without a separate title field keep the document's headi
   handleApi = repoApi(new Map([[".pages.yml", bodyConfig]]));
   const { site, config } = await gh.findSite("owner/blog", "pages");
   const collection = config.collections[0];
-  const repo = { files: new Map(), commits: 0 };
+  const repo = { files: new Map(), blobs: new Map(), commits: 0 };
   handleApi = branchApi(repo);
   const saved = await gh.saveEntry("/Writing/BodyOnly.md", "# Keep this heading\n\nBody", { site, collection, values: {}, name: "article", title: "Keep this heading" });
   const { content } = repo.files.get(saved.path);
   assert.match(cms.parseEntry(content).body, /# Keep this heading/);
   assert.deepEqual(cms.parseEntry(content).data, {});
+});
+
+test("Pages saves upload pasted and chosen images to their media sources in the entry's commit", async () => {
+  const config = `media:
+- { name: images, input: public/images, output: /images }
+- { name: heroes, input: public/heroes, output: /heroes }
+content:
+- name: posts
+  type: collection
+  path: content/posts
+  filename: "{primary}.md"
+  fields:
+  - { name: title, type: string }
+  - { name: hero, type: image, options: { media: heroes } }
+  - { name: body, type: rich-text }
+`;
+  handleApi = repoApi(new Map([[".pages.yml", config]]));
+  const { site, config: parsed } = await gh.findSite("owner/blog", "pages");
+  const collection = parsed.collections[0];
+  const png = text => Buffer.from(text).toString("base64");
+  pictures.set("/Writing/assets/Sea View.png", png("sea"));
+  pictures.set("/Writing/assets/hero.png", png("hero"));
+  // A different picture already has the pasted one's name.
+  const repo = { files: new Map([["public/images/sea-view.png", { content: "older", sha: gitSha("older") }]]), blobs: new Map(), commits: 0 };
+  handleApi = branchApi(repo);
+  const values = { title: "Shore", hero: { local: "assets/hero.png" } };
+  const saved = await gh.saveEntry("/Writing/Shore.md", "# Shore\n\n![Sea](assets/Sea%20View.png)", { site, collection, values, name: "shore", title: "Shore" });
+  assert.equal(repo.commits, 1);
+  assert.equal(repo.files.get("public/images/sea-view-2.png").content, "sea");
+  assert.equal(repo.files.get("public/heroes/hero.png").content, "hero");
+  const entry = cms.parseEntry(repo.files.get(saved.path).content);
+  assert.equal(entry.data.hero, "/heroes/hero.png");
+  assert.match(entry.body, /!\[Sea\]\(\/images\/sea-view-2\.png\)/);
+  // Saving again sends nothing new: the links now point at the site's copies.
+  await gh.saveEntry("/Writing/Shore.md", "# Shore\n\n![Sea](assets/Sea%20View.png)", { site, collection, values, name: "shore", title: "Shore" });
+  assert.equal(repo.commits, 1);
 });

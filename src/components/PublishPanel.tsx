@@ -316,6 +316,7 @@ function EntryForm(props: { site: Site; collection: Collection; localPath: strin
   const target = link?.path ?? entryPath(collection, name || "entry");
   const media = mediaLocation(collection, target, values);
   const images = gh.imagesToUpload(getText(), collection, values, media?.prefix);
+  const folders = images ? gh.imageFolders(getText(), collection, target, values) : [];
   const saving = status.kind === "saving";
 
   const save = async (overwrite = false) => {
@@ -384,10 +385,10 @@ function EntryForm(props: { site: Site; collection: Collection; localPath: strin
         </p>
       )}
       {images > 0 &&
-        (media ? (
+        (!folders.includes(null) ? (
           <p className="hint">
-            {images === 1 ? "Its image" : `Its ${images} images`} will be uploaded to {media.folder || "the repository root"}, in the
-            same commit.
+            {images === 1 ? "Its image" : `Its ${images} images`} will be uploaded to{" "}
+            {folders.map((f) => f || "the repository root").join(" and ")}, in the same commit.
           </p>
         ) : (
           <p className="warning-text">

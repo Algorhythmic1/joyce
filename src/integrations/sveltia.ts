@@ -39,6 +39,8 @@ export interface Field {
   /** Pages CMS uses date-fns tokens rather than Moment tokens. */
   formatStyle?: "date-fns";
   valueType?: "int" | "float";
+  /** Where an image field's uploads go, when not with the collection's other images. */
+  media?: Media;
 }
 
 export interface Collection {
@@ -445,12 +447,19 @@ export function normalizePath(path: string): string | null {
 }
 
 /**
- * Where an entry's images go: the repo folder to commit them to, and the prefix
- * the Markdown links to them with (e.g. "../../assets/blog/" or "/uploads/").
+ * Where an entry's images go (or one image field's, if it has its own): the repo
+ * folder to commit them to, and the prefix the Markdown links to them with
+ * (e.g. "../../assets/blog/" or "/uploads/").
  * Null if the site's config doesn't say, or says somewhere outside the repo.
  */
-export function mediaLocation(c: Collection, entryRepoPath: string, values: Values): { folder: string; prefix: string } | null {
-  if (!c.media) return null;
+export function mediaLocation(
+  c: Collection,
+  entryRepoPath: string,
+  values: Values,
+  field?: Field,
+): { folder: string; prefix: string } | null {
+  const media = field?.media ?? c.media;
+  if (!media) return null;
   const file = entryRepoPath.slice(entryRepoPath.lastIndexOf("/") + 1);
   const entryDir = entryRepoPath.slice(0, Math.max(0, entryRepoPath.lastIndexOf("/")));
   const inCollection = c.folder && entryDir.startsWith(c.folder) ? entryDir.slice(c.folder.length).replace(/^\//, "") : "";
@@ -464,10 +473,10 @@ export function mediaLocation(c: Collection, entryRepoPath: string, values: Valu
   };
   const expand = (t: string) =>
     t.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (m, k: string) => vars[k] ?? expandTemplate(m, c, values));
-  const folder = expand(c.media.folder);
+  const folder = expand(media.folder);
   const repoFolder = normalizePath(folder.startsWith("/") ? folder : `${entryDir}/${folder}`);
   if (repoFolder === null) return null;
-  const pub = expand(c.media.publicFolder);
+  const pub = expand(media.publicFolder);
   return { folder: repoFolder, prefix: pub === "" ? "" : `${pub.replace(/\/+$/, "")}/` };
 }
 
