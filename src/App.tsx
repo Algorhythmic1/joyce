@@ -6,7 +6,7 @@ import { sectionMarks } from "./editor/sections";
 import { SYNC_EVENT } from "./editor/setup";
 import type { SectionIcon } from "./sectionIcons";
 import {
-  applyOrder, compileProject, descendantsOf, findEntry, initProject, insertIntoOrder, isOrdered, makeProject, placeInOrder,
+  applyOrder, compileProject, descendantsOf, findEntry, initProject, insertIntoOrder, isOrdered, makeProject, placeInOrder, projectOf,
   removeFromOrder, renameInOrder, setSectionIcon, takeFromOrder, type Compiled, type Placement,
 } from "./projects";
 import { Toolbar, type Panel } from "./components/Toolbar";
@@ -18,7 +18,7 @@ import { SettingsPanel } from "./components/SettingsPanel";
 import { ProgressPanel } from "./components/ProgressPanel";
 import { startReminders } from "./reminders";
 import { bindFolder, flushFolderState, reloadFolderState, toRel } from "./folderState";
-import { flushCanvases, reloadCanvas } from "./canvas/sessions";
+import { flushCanvases, releaseCanvases, reloadCanvas } from "./canvas/sessions";
 import { SyncPanel, statusText } from "./components/SyncPanel";
 import { onRemoteChanges, useSync } from "./sync";
 import { goalFor, periodTotal, recordWriting, useDays, useGoals, type Period } from "./stats";
@@ -247,6 +247,8 @@ export default function App() {
   /** Renames or moves a file or folder, keeping everything that points at it in step. */
   /** Moves one file or folder on disk and updates everything keyed by its path. */
   const renameOnDisk = async (path: string, to: string) => {
+    // Boards inside save first, then reopen from their new place.
+    await releaseCanvases(path);
     await storage.rename(path, to);
     moveLinks(path, to);
     moveDocGoals(path, to);
@@ -426,6 +428,7 @@ export default function App() {
   const trash = async (path: string) => {
     try {
       await flush();
+      await releaseCanvases(path);
       await storage.trash(path);
       forgetLinks(path);
       forgetDocGoals(path);
@@ -589,6 +592,14 @@ export default function App() {
     }
   }, [days, goals]);
 
+  // Each project has its own canvas; writing outside any project shares the folder's.
+  const canvasFolder = useRef("");
+  const canvasTarget = project?.path ?? doc?.path;
+  // Just after a rename the tree hasn't caught up yet: keep the current board until it does.
+  if (root && (!canvasTarget || findEntry(tree, canvasTarget) || !isWithin(canvasFolder.current, root))) {
+    canvasFolder.current = (canvasTarget && projectOf(tree, root, canvasTarget)?.path) || root;
+  }
+
   const cssVars = {
     "--font": fontStack(settings.font),
     "--font-size": `${settings.fontSize}px`,
@@ -734,7 +745,7 @@ export default function App() {
             />
           )}
           <Suspense fallback={<div className="empty">Opening your canvas…</div>}>
-            <CanvasWorkspace key={root} root={root} maximized={canvasMaximized}
+            <CanvasWorkspace key={canvasFolder.current} root={canvasFolder.current} maximized={canvasMaximized}
               onToggleMaximized={() => { setCanvasMaximized(value => !value); setPanel(null); setTyping(false); }} onClose={closeCanvas}/>
           </Suspense>
         </aside>}

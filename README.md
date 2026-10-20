@@ -55,7 +55,7 @@ The connected-card button in the toolbar (⇧⌘M / Ctrl+Shift+M) opens an infin
 - The minimap shows the cards and current viewport. Click to jump or drag the viewport to navigate. The **?** button lists shortcuts.
 - ⌘/Ctrl+Z undoes board actions; Shift+⌘/Ctrl+Z redoes them. An active text field keeps its own text undo. Canvas ideas do not count toward document writing goals.
 
-Cards and connections are saved as readable, versioned JSON in `.joyce/canvas.json`. Camera position stays on each computer. Sync preserves conflicting canvas versions; **Recovered versions** lets you preview and restore them, backing up the current board first. Save failures keep your ideas in memory and show a Retry action. Reduced-motion preferences disable the grid’s simulated indentation.
+Each project has its own canvas, which switches as you move between projects; documents outside any project share the writing folder’s canvas. Cards and connections are saved as readable, versioned JSON in the project’s `.joyce/canvas.json` (or the writing folder’s), so a board moves and syncs with its project. Camera position stays on each computer. Sync preserves conflicting canvas versions; **Recovered versions** lets you preview and restore them, backing up the current board first. Save failures keep your ideas in memory and show a Retry action. Reduced-motion preferences disable the grid’s simulated indentation.
 
 Run `npm test` (Node 22.18+ or 24+) for the canvas geometry, undo, saving, validation, and recovery tests. `npm run build` checks TypeScript and builds the UI; `cd src-tauri` followed by `cargo test --lib` checks the native storage and sync behavior.
 

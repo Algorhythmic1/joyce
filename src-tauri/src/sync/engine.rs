@@ -560,6 +560,8 @@ mod tests {
     fn canvas_ideas_keep_conflicting_versions() {
         assert!(!is_app_data(".joyce/canvas.json"));
         assert!(!is_app_data(".joyce/canvas (conflict from B).json"));
+        assert!(!is_app_data("Novel/.joyce/canvas.json"), "each project's own board");
+        assert!(!is_app_data("Novel/.joyce/canvas (conflict from B).json"));
         assert!(is_app_data(".joyce/goals.json"));
         assert!(is_app_data(".joyce/canvas-settings.json"));
         assert!(is_app_data("Novel/.joyce.json"));
